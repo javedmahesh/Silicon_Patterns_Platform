@@ -1,0 +1,13 @@
+# Silicon Patterns Platform — runtime dependencies.
+#
+# pyproject.toml is the CANONICAL dependency source. This file exists so platforms
+# that auto-detect requirements.txt (some Railway / Nixpacks / Heroku buildpacks)
+# install the full app WITH the production Postgres driver. The Dockerfile installs
+# via pyproject directly (`pip install -e ".[postgres]"`).
+#
+#   pip install -r requirements.txt      # == pip install -e ".[postgres]"
+#
+# Append ".[lightgbm]" as well if you want the LightGBM training backend (an optional
+# upgrade over the default scikit-learn GradientBoosting backend).
+
+-e .[postgres]

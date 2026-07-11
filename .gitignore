@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Environment / secrets (keep .env.example)
+.env
+.env.*
+!.env.example
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+# Intermediate OpenAPI dump (only src/lib/api/schema.ts is committed).
+frontend/openapi.json
+
+# Outreach (standalone Next.js app — also has its own nested .gitignore).
+# .env / .env.*.local are already covered by the secrets block above (keeps .env.example).
+outreach/node_modules/
+outreach/.next/
+outreach/out/
+outreach/.vercel/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+
+# NOTE: master_local.db is intentionally NOT ignored — it ships as dev seed data.

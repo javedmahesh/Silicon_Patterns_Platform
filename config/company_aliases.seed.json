@@ -1,0 +1,12 @@
+{
+  "_comment": "Starter alias seeds — illustrative. Each maps an observed company name spelling to its canonical company_domain. The seed loader (integration/seeds.py) routes every entry through CompanyResolver, so a low-confidence company stub is created for the domain and the alias is recorded. Real aliases accumulate automatically as the engines are ingested in P1.",
+  "aliases": [
+    { "alias": "Groq",            "company_domain": "groq.com" },
+    { "alias": "Groq Inc.",       "company_domain": "groq.com" },
+    { "alias": "GROQ",            "company_domain": "groq.com" },
+    { "alias": "Etched",          "company_domain": "etched.ai" },
+    { "alias": "Etched.ai",       "company_domain": "etched.ai" },
+    { "alias": "Tenstorrent",     "company_domain": "tenstorrent.com" },
+    { "alias": "Tenstorrent Inc", "company_domain": "tenstorrent.com" }
+  ]
+}

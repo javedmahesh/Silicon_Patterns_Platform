@@ -1,0 +1,26 @@
+# The API image only needs the Python packages — keep it small.
+frontend/
+.git/
+.github/
+docs/
+tests/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+.vercel/
+# Dev-only SQLite seed data; production uses DATABASE_URL (Postgres).
+master_local.db
+master_local.db.bak
+*.bak
+.env
+.env.*
+# Local tooling / scratch that must never land in the image.
+.claude/
+*_output*.txt
+test_output.txt
+full_test_output.txt
+*.md
+!README.md

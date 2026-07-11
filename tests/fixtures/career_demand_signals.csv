@@ -1,0 +1,2 @@
+canonical_company_id,company_name,company_domain,country,region_flag,rtl_jobs,asic_jobs,verification_jobs,physical_design_jobs,dft_jobs,sta_jobs,validation_jobs,fpga_jobs,embedded_jobs,total_engineering_jobs,technologies_detected,primary_focus,demand_score,demand_signal,hiring_trend,lead_readiness_score,newest_job_date,hiring_regions,india_hiring_flag,ats_provider,last_updated
+groq.com,Groq,groq.com,United States,North America,3,2,1,0,0,0,0,0,0,6,SystemVerilog;UVM,RTL,75.0,Strong engineering hiring,GROWING,70.0,2026-04-01,North America,No,greenhouse,2026-04-02 10:00

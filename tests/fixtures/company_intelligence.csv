@@ -1,0 +1,2 @@
+canonical_company_id,company_name,company_domain,company_tier,country,region_flag,demand_score,lead_readiness_score,demand_signal,total_engineering_jobs,primary_focus,technologies_detected,newest_job_date,hiring_regions,india_hiring_flag,priority_rank,next_action,last_updated
+groq.com,Groq,groq.com,SCALEUP,United States,North America,75.0,70.0,Strong engineering hiring,6,RTL,SystemVerilog;UVM,2026-04-01,North America,No,A,Reach out to VP Engineering,2026-04-02 10:00

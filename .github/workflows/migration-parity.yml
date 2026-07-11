@@ -1,0 +1,36 @@
+name: Migration/model parity check
+
+# Static check only — no database connection required (see
+# scripts/check_migration_model_parity.py). Catches a model column added without a
+# matching SQL migration (or vice versa) before it ever reaches a real Postgres deploy.
+on:
+  pull_request:
+    paths:
+      - "master_db/models.py"
+      - "master_db/migrations/**"
+      - "config/enums.py"
+  push:
+    branches: [main]
+    paths:
+      - "master_db/models.py"
+      - "master_db/migrations/**"
+      - "config/enums.py"
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install platform
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Check migration <-> model parity
+        run: python scripts/check_migration_model_parity.py

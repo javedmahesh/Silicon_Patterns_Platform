@@ -1,0 +1,61 @@
+[project]
+name = "silicon-patterns-platform"
+version = "1.0.0"
+description = "Unified Silicon Patterns platform: integration, lead scoring, API, and orchestrator over the master company database."
+requires-python = ">=3.11"
+dependencies = [
+  "SQLAlchemy>=2.0,<3.0",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2.5",
+  "pydantic-settings>=2.1",
+  "httpx>=0.27",
+  "typer>=0.9",
+  "rich>=13.0",
+  "openpyxl>=3.1",
+  "google-auth>=2.0",
+  "google-auth-oauthlib>=1.0",
+  "google-api-python-client>=2.100",
+  "cryptography>=42.0",
+  "pyjwt>=2.8",
+  "python-dotenv>=1.0",
+  # ML foundation + recommendation model. numpy + joblib are imported at app import
+  # time (ml.model is pulled in by the /ml router), so they are REQUIRED for the API
+  # to start; scikit-learn backs training/evaluation/inference. (LightGBM is an
+  # optional drop-in upgrade — see the `lightgbm` extra.)
+  "numpy>=1.26",
+  "joblib>=1.3",
+  "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+lightgbm = ["lightgbm>=4.0"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+sp-platform = "orchestrator.cli:main"
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+# Auto-discover every runtime package (keeps this in sync as modules are added —
+# the old hand-maintained list had already drifted, omitting ml / engagement /
+# leadership_signals / integration.news, which broke a non-editable `pip install .`).
+[tool.setuptools.packages.find]
+include = [
+  "config*", "integration*", "master_db*", "lead_scoring*", "leadership_signals*",
+  "engagement*", "ml*", "backend*", "orchestrator*",
+]
+exclude = ["tests*", "docs*", "frontend*", "scripts*"]
+
+# Ship the non-Python runtime assets so a NON-editable `pip install .` still has the
+# SQL migrations and the scheduler cadence file (the Docker image uses `-e`, but this
+# keeps buildpack/wheel installs correct too).
+[tool.setuptools.package-data]
+master_db = ["migrations/*.sql"]
+config = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

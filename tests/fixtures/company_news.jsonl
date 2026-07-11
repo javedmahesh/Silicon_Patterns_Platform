@@ -1,0 +1,4 @@
+{"company_name":"Groq","company_domain":"groq.com","news_type":"EXECUTIVE_HIRE","person_name":"Jane Doe","person_title":"VP of Engineering","previous_company":"Intel","published_date":"2026-05-01","article_url":"https://example.com/1","source":"TechCrunch"}
+{"company_name":"Groq","company_domain":"groq.com","news_type":"switch","person_name":"John Roe","previous_title":"Director","new_role":"SVP Silicon","previous_company":"NVIDIA","published_date":"2026-05-10","article_url":"https://example.com/2"}
+{"company_name":"Tenstorrent","company_domain":"tenstorrent.com","news_type":"PROMOTION","person_name":"Amy Lin","previous_title":"Staff Eng","new_role":"Principal Eng","published_date":"2026-05-12","article_url":"https://example.com/3"}
+{"company_name":"Tenstorrent","company_domain":"tenstorrent.com","news_type":"NEWS","headline":"Opens new Austin design center","published_date":"2026-05-15","article_url":"https://example.com/4"}

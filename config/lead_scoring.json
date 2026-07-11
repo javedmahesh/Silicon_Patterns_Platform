@@ -1,0 +1,27 @@
+{
+  "_comment": "Tunable Lead Scoring parameters (P3). final = clamp( (w.opportunity*opp + w.demand*demand + w.readiness*readiness + w.decision_maker*dm) * region_mult * prospect_mult * tier_mult, 0, 100 ). Each subscore is 0-100. Edit and re-run `python -m lead_scoring.run` to re-score. UNKNOWN multipliers are intentionally near-neutral (0.9) so unclassified stub companies are not unfairly crushed. coverage_normalization (0..1) divides the weighted base by the weight of the signals that actually had data, so a strong company with missing signals is not diluted by the absent zeros (1 = full normalization, 0 = legacy weighted average). confidence_bands map the count of present engine signals (opportunity/demand/decision-makers, 0-3) to low/medium/high confidence.",
+  "model_version": "lead-scoring-v2",
+  "weights": {"opportunity": 0.30, "demand": 0.30, "readiness": 0.20, "decision_maker": 0.20},
+  "region_mult": {"APPROVED": 1.0, "REVIEW_REQUIRED": 0.85, "EXCLUDED_REGION": 0.3, "UNKNOWN": 0.9},
+  "prospect_mult": {"PRODUCT_COMPANY": 1.0, "SERVICE_PROVIDER": 0.7, "EDA_VENDOR": 0.6, "FOUNDRY": 0.6, "INVESTOR": 0.4, "PUBLISHER": 0.2, "ACADEMIC": 0.3, "UNKNOWN": 0.9},
+  "tier_mult": {"STARTUP": 1.0, "SCALEUP": 1.0, "ESTABLISHED": 0.8, "INCUMBENT": 0.85, "UNKNOWN": 0.9},
+  "demand_reference": 100.0,
+  "opportunity_multi_bonus": 5.0,
+  "dm_points_senior": 25.0,
+  "dm_points_other": 12.0,
+  "dm_cap": 100.0,
+  "grade_bands": {"A+": 70.0, "A": 50.0, "B": 30.0},
+  "coverage_normalization": 1.0,
+  "confidence_bands": {"high": 3, "medium": 2},
+  "review_feedback": {
+    "_comment": "Optional human-review -> score adjustment (reconciled Change_05). enabled=false keeps the model score untouched and adjusted==model everywhere (Task viii default). When true, a SEPARATE adjusted score/grade is derived per company from its current lead_reviews.review_status: boost multiplies the model score, penalty multiplies down, floor_grade lifts to a minimum grade. The model lead_score/grade are NEVER modified; the adjustment never compounds (always from the pristine model score). Score-affecting statuses then require a reason + manager/admin.",
+    "enabled": false,
+    "status_effects": {
+      "strategic_account": {"boost": 1.15, "floor_grade": "A"},
+      "approved": {"boost": 1.05},
+      "disqualified": {"penalty": 0.6},
+      "watchlist": {},
+      "needs_review": {}
+    }
+  }
+}

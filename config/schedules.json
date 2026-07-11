@@ -1,0 +1,9 @@
+{
+  "_comment": "Cadence per pipeline component, used by `sp-platform status` to compute the next scheduled run (last success + cadence). Actual triggering is external (cron / Windows Task Scheduler / systemd timer) — see `sp-platform schedule`. Values: daily | weekly | manual.",
+  "industry": "weekly",
+  "blog": "daily",
+  "news": "daily",
+  "career": "daily",
+  "decision_maker_intelligence": "weekly",
+  "scoring": "daily"
+}

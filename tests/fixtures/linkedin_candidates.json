@@ -1,0 +1,26 @@
+[
+  {
+    "linkedin_url": "https://www.linkedin.com/in/jane-doe",
+    "first_name": "Jane",
+    "last_name": "Doe",
+    "headline": "VP Engineering at Groq",
+    "current_title": "VP Engineering",
+    "location": "Mountain View, CA",
+    "match_score": 88,
+    "status": "sourced",
+    "agent_score": 91,
+    "agent_reasoning": "Strong RTL leadership background.",
+    "profile_data": { "positions": [ { "title": "VP Engineering", "companyName": "Groq" } ] }
+  },
+  {
+    "linkedin_url": "https://www.linkedin.com/in/bob-smith?trk=abc",
+    "first_name": "Bob",
+    "last_name": "Smith",
+    "headline": "Director of Silicon at Obscure Startup XYZ",
+    "current_title": "Director of Silicon",
+    "location": "Austin, TX",
+    "match_score": 70,
+    "status": "sourced",
+    "profile_data": {}
+  }
+]

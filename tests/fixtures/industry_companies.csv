@@ -1,0 +1,3 @@
+canonical_company_id,company_name,company_domain,website,country,city,headquarters,founded_year,region_flag,prospect_type,company_tier,company_status,company_category,technology_focus,linkedin_url,confidence_score,validation_status,source,source_type,discovery_date,last_updated
+GROQ,Groq,groq.com,https://groq.com,United States,Mountain View,Mountain View,2016,APPROVED,PRODUCT_COMPANY,SCALEUP,ACTIVE,AI Accelerators,Inference,https://www.linkedin.com/company/groq,90,VALID,seed_list,Curated,2026-01-01,2026-01-02 09:00
+TENSTORRENT,Tenstorrent,www.tenstorrent.com,https://www.tenstorrent.com,Canada,Toronto,Toronto,2016,APPROVED,PRODUCT_COMPANY,SCALEUP,ACTIVE,RISC-V,AI;RISC-V,https://www.linkedin.com/company/tenstorrent,85,VALID,portfolio,VC,2026-01-03,2026-01-04 10:00

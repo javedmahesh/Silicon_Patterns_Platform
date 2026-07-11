@@ -1,0 +1,3 @@
+job_id,company_name,company_domain,company_tier,country,region_flag,job_title,job_category,location,employment_type,posted_date,ats_provider,technologies,seniority,engineering_relevance_score,job_url,source_url,scrape_date
+,Groq,groq.com,SCALEUP,United States,North America,Senior RTL Design Engineer,RTL,Mountain View,Full-time,2026-04-01,greenhouse,SystemVerilog;UVM,senior,90,https://boards.greenhouse.io/groq/jobs/1,https://groq.com/careers,2026-04-02
+,Nuvia,jobs.lever.co,STARTUP,United States,North America,ASIC Engineer,ASIC,Austin,Full-time,2026-03-01,lever,Verilog,senior,80,https://jobs.lever.co/nuvia/2,https://jobs.lever.co/nuvia,2026-03-02

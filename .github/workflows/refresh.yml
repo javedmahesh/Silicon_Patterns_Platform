@@ -1,0 +1,124 @@
+name: Refresh pipeline
+
+# Twice-daily data refresh: runs the orchestrator against the hosted Postgres.
+# GitHub cron is UTC. 09:00 & 21:00 UTC below — adjust for your timezone, e.g.
+# 09:00/21:00 IST (UTC+5:30) => "30 3,15 * * *".
+on:
+  schedule:
+    - cron: "0 9,21 * * *"
+  workflow_dispatch:
+    inputs:
+      run_engine:
+        description: "Also run the live crawlers (requires the engines to be present)"
+        type: boolean
+        default: true
+
+# Never let two refreshes overlap (keeps runs idempotent + freshness clean).
+concurrency:
+  group: refresh-pipeline
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read   # checkout
+      issues: write    # open/update the failure-alert issue (uses the built-in GITHUB_TOKEN)
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}              # dedicated master Postgres (session pooler)
+      APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}        # Decision Maker Intelligence engine (Apify)
+      SP_ENGINES_DIR: ${{ github.workspace }}/engines        # where the 4 engines are checked out/vendored
+    steps:
+      - name: Checkout platform
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install platform
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # --- ENGINES (required for live crawling) --------------------------------
+      # The four engines live in separate folders. Make them available under
+      # $SP_ENGINES_DIR so the orchestrator can run + ingest them. Pick ONE:
+      #   (a) vendor them into this repo under ./engines/<Engine_Folder>/, or
+      #   (b) check them out here, e.g.:
+      #
+      # - name: Checkout Career Scraper
+      #   uses: actions/checkout@v4
+      #   with:
+      #     repository: your-org/Career_Scraper_FINAL
+      #     path: engines/Career_Scraper_FINAL
+      #     token: ${{ secrets.ENGINES_TOKEN }}
+      # - run: pip install -r "engines/Career_Scraper_FINAL/career scrapper/career_scraper_requirements.txt"
+      #   ...repeat for Industry / Blog (+ their requirements).
+      #
+      # Without the engines present, the --run-engine stages fail (and are LOGGED in
+      # pipeline_runs); scoring still runs over existing data. See docs/DEPLOYMENT.md.
+
+      - name: Run refresh
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.run_engine }}" = "false" ]; then
+            python -m orchestrator.cli run all --trigger daily
+          else
+            python -m orchestrator.cli run all --run-engine --trigger daily
+          fi
+
+      - name: Run history (audit)
+        if: always()
+        run: python -m orchestrator.cli runs --limit 10
+
+      # Alert on a failed refresh so a broken pipeline doesn't go unnoticed between
+      # runs. De-duped: comments on the existing open alert issue, else opens one.
+      # Uses the built-in GITHUB_TOKEN (no extra secret). NOTE: this fires on a
+      # process-level failure (a step exited non-zero). Stage failures that the
+      # orchestrator catches and only LOGS to `pipeline_runs` won't trip it — check
+      # /pipeline/status or `orchestrator.cli runs` for those.
+      - name: Alert on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const label = "pipeline-failure";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              "The scheduled **Refresh pipeline** failed.",
+              "",
+              `- Run: ${runUrl}`,
+              `- Trigger: \`${context.eventName}\``,
+              `- Commit: \`${context.sha.slice(0, 7)}\``,
+              "",
+              "Inspect the run logs and `pipeline_runs` for the failing stage, then recover with",
+              "`python -m orchestrator.cli run all --resume` (re-runs only the stages that didn't succeed).",
+            ].join("\n");
+            const { owner, repo } = context.repo;
+            const existing = await github.rest.issues.listForRepo({
+              owner, repo, state: "open", labels: label, per_page: 1,
+            });
+            if (existing.data.length) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: existing.data[0].number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner, repo, title: "Scheduled refresh pipeline failed", body, labels: [label],
+              });
+            }
+
+      # --- Slack alternative (optional) ----------------------------------------
+      # Prefer Slack/email over an issue? Add a SLACK_WEBHOOK_URL secret and swap the
+      # step above for a webhook POST:
+      #
+      # - name: Alert Slack on failure
+      #   if: failure()
+      #   env:
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      #   run: |
+      #     curl -fsS -X POST -H 'Content-Type: application/json' \
+      #       -d "{\"text\":\":rotating_light: Refresh pipeline failed — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+      #       "$SLACK_WEBHOOK_URL"

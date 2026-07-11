@@ -1,0 +1,11 @@
+{
+  "_comment": "Manual classification/enrichment for the top demand companies that entered as Career stubs (UNKNOWN tier/prospect/compliance). Sets the three fields Lead Scoring multiplies on, plus light enrichment. Applying this marks them classified (is_stub=false, validation_status=VALID). This is a stand-in for what Industry Discovery would produce when run over the real universe.",
+  "companies": [
+    {"domain": "tenstorrent.com", "company_tier": "SCALEUP", "prospect_type": "PRODUCT_COMPANY", "compliance_flag": "APPROVED", "country": "Canada", "headquarters": "Toronto, Canada", "industry_category": "AI Silicon", "technology_focus": "AI Accelerator,RISC-V", "founded_year": "2016"},
+    {"domain": "eliyan.com", "company_tier": "STARTUP", "prospect_type": "PRODUCT_COMPANY", "compliance_flag": "APPROVED", "country": "United States", "headquarters": "Santa Clara, USA", "industry_category": "Chiplets", "technology_focus": "Chiplets,Die-to-Die Interconnect", "founded_year": "2021"},
+    {"domain": "ambiq.com", "company_tier": "SCALEUP", "prospect_type": "PRODUCT_COMPANY", "compliance_flag": "APPROVED", "country": "United States", "headquarters": "Austin, USA", "industry_category": "Low Power", "technology_focus": "Ultra-Low-Power SoC,Edge AI", "founded_year": "2010"},
+    {"domain": "axelera.ai", "company_tier": "SCALEUP", "prospect_type": "PRODUCT_COMPANY", "compliance_flag": "APPROVED", "country": "Netherlands", "headquarters": "Eindhoven, Netherlands", "industry_category": "AI Silicon", "technology_focus": "Edge AI Inference", "founded_year": "2021"},
+    {"domain": "sifive.com", "company_tier": "SCALEUP", "prospect_type": "PRODUCT_COMPANY", "compliance_flag": "APPROVED", "country": "United States", "headquarters": "Santa Clara, USA", "industry_category": "RISC-V", "technology_focus": "RISC-V Cores,Processor IP", "founded_year": "2015"},
+    {"domain": "edgecortix.com", "company_tier": "STARTUP", "prospect_type": "PRODUCT_COMPANY", "compliance_flag": "APPROVED", "country": "Japan", "headquarters": "Tokyo, Japan", "industry_category": "AI Silicon", "technology_focus": "Edge AI Inference", "founded_year": "2019"}
+  ]
+}
