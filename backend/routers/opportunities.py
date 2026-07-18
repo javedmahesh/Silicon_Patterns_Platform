@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from backend import news_service, services
@@ -13,9 +13,10 @@ from backend.schemas import (
     OpportunityDetailOut,
     OpportunityOut,
     OpportunityReviewIn,
+    OpportunityUpdate,
     Page,
 )
-from backend.security import get_current_user, require_manager
+from backend.security import get_current_user, require_admin, require_manager
 from master_db.models import User
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
@@ -34,12 +35,16 @@ def list_opportunities(
     sort: str | None = Query(None, description="Order: newest | oldest | score (default score)"),
     annual_lists_only: bool = Query(False, description="Return only ANNUAL_LIST appearances"),
     company_news_only: bool = Query(False, description="Return only company-news / people-move entries"),
+    signal_category: str | None = Query(
+        None, description="First-class signal category: LEADERSHIP | NEWS. Leadership "
+                          "people-movement events are separated out of the NEWS feed."),
 ):
     return services.list_opportunities(
         session, pagination=page, opportunity_type=opportunity_type,
         company_domain=company_domain, date_from=date_from, date_to=date_to,
         lifecycle_status=lifecycle_status, hide_archived=hide_archived, sort=sort,
         annual_lists_only=annual_lists_only, company_news_only=company_news_only,
+        signal_category=signal_category,
     )
 
 
@@ -113,3 +118,24 @@ def set_lifecycle(
 ):
     return news_service.set_lifecycle(
         session, opportunity_id, lifecycle_status=lifecycle_status, actor_email=user.email)
+
+
+@router.patch("/{opportunity_id}", response_model=OpportunityOut,
+              summary="Edit an opportunity's fields (admin only)")
+def update_opportunity(
+    opportunity_id: str,
+    body: OpportunityUpdate,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_admin),
+):
+    return services.update_opportunity(session, opportunity_id, body.model_dump(exclude_unset=True))
+
+
+@router.delete("/{opportunity_id}", status_code=status.HTTP_204_NO_CONTENT,
+               summary="Permanently delete an opportunity (admin only)")
+def delete_opportunity(
+    opportunity_id: str,
+    session: Session = Depends(get_session),
+    _: User = Depends(require_admin),
+):
+    services.delete_opportunity(session, opportunity_id)

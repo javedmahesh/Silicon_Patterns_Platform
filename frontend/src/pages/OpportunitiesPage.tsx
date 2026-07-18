@@ -17,12 +17,20 @@ import { useOpportunities } from "@/lib/api/queries";
 import type { OpportunityOut } from "@/lib/api/types";
 import { enumLabel, fmtDate, fmtInt, fmtRelative, fmtScore } from "@/lib/format";
 
-const KEYS = ["page", "opportunity_type", "lifecycle_status", "sort", "date_from", "date_to"] as const;
+const KEYS = ["page", "opportunity_type", "lifecycle_status", "sort", "date_from", "date_to", "signal_category"] as const;
 
 const SORT_OPTIONS = [
   { value: "newest", label: "Newest first" },
   { value: "oldest", label: "Oldest first" },
   { value: "score", label: "Top score" },
+] as const;
+
+// First-class signal categories. Default is NEWS, so leadership people-movement
+// events no longer appear under the general Opportunities/News feed.
+const CATEGORY_OPTIONS = [
+  { value: "NEWS", label: "News" },
+  { value: "LEADERSHIP", label: "Leadership" },
+  { value: "ALL", label: "All signals" },
 ] as const;
 
 type Tone = "neutral" | "accent" | "positive" | "warning" | "danger";
@@ -107,10 +115,16 @@ const columns: ColumnDef<OpportunityOut, any>[] = [
   },
 ];
 
-export function OpportunitiesPage() {
+/** ``fixedCategory`` locks the page to one signal category (used by the dedicated
+ *  Leadership route); left undefined, the page defaults to NEWS with a category
+ *  selector — so leadership events never appear under the general News feed. */
+export function OpportunitiesPage({ fixedCategory }: { fixedCategory?: "LEADERSHIP" | "NEWS" } = {}) {
   const { values, setValue, clear, activeCount } = useUrlFilters(KEYS);
   const page = Math.max(1, Number(values.page) || 1);
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
+
+  const category = fixedCategory ?? (values.signal_category || "NEWS");
+  const isLeadership = category === "LEADERSHIP";
 
   const { data, isLoading, isError, error, refetch } = useOpportunities({
     page,
@@ -119,16 +133,38 @@ export function OpportunitiesPage() {
     sort: (values.sort || "newest") as "newest" | "oldest" | "score",
     date_from: values.date_from,
     date_to: values.date_to,
+    // "ALL" clears the filter; otherwise scope to the chosen first-class category.
+    signal_category: category === "ALL" ? undefined : category,
   });
   const items = data?.items ?? [];
+
+  const noun = isLeadership ? "leadership signals" : category === "ALL" ? "signals" : "market events";
 
   return (
     <>
       <PageHeader
-        title="Opportunities"
-        subtitle={data ? `${fmtInt(data.total)} market events` : "Market events from the News Collection Engine"}
+        title={isLeadership ? "Leadership signals" : "Opportunities"}
+        subtitle={
+          data
+            ? `${fmtInt(data.total)} ${noun}`
+            : isLeadership
+              ? "Executive hires, leadership & role changes — a first-class signal category"
+              : "Market events from the News Collection Engine"
+        }
       >
         <FilterBar activeCount={activeCount} onClear={clear}>
+          {!fixedCategory && (
+            <select
+              aria-label="Signal category"
+              value={category}
+              onChange={(e) => setValue("signal_category", e.target.value)}
+              className="h-8 rounded-md border border-line-strong bg-control px-2 text-13 text-fg"
+            >
+              {CATEGORY_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          )}
           <DebouncedInput
             value={values.opportunity_type}
             onChange={(v) => setValue("opportunity_type", v)}

@@ -49,8 +49,12 @@ export function AnalyticsPage() {
     { name: "Scored", value: s?.total_leads ?? 0 },
     { name: "Qualified A–B", value: qualified },
   ];
+  // Opportunities split into their first-class signal categories (leadership is
+  // counted and charted separately from news).
+  const cats = s?.signal_category_counts ?? {};
   const coverageData = [
-    { name: "Opportunities", value: s?.total_opportunities ?? 0 },
+    { name: "News signals", value: cats.NEWS ?? 0 },
+    { name: "Leadership signals", value: cats.LEADERSHIP ?? 0 },
     { name: "Eng. jobs", value: s?.total_jobs ?? 0 },
     { name: "Demand", value: s?.total_demand_signals ?? 0 },
     { name: "Decision makers", value: s?.total_decision_makers ?? 0 },

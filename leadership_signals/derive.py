@@ -584,11 +584,21 @@ def from_decision_maker_snapshots(session: Session, *, now: datetime | None = No
 
 
 def _replace(session: Session, source: str, signals: list[dict]) -> None:
+    from orchestrator import provenance
+
     session.execute(delete(LeadershipSignal).where(LeadershipSignal.source == source))
     session.flush()
     stamp = _utcnow()
     for s in signals:
         session.add(LeadershipSignal(**s, computed_at=stamp))
+        provenance.record(session, "leadership_signals", s["signal_id"], "derived", {
+            "person_name": s.get("person_name", ""),
+            "company_name": s.get("company_name", ""),
+            "movement_type": s.get("movement_type", ""),
+            "to_title": s.get("to_title", ""),
+            "effective_date": s.get("effective_date", ""),
+            "source": source,
+        })
 
 
 def rebuild(session: Session, *, window_months: int = DEFAULT_WINDOW_MONTHS,

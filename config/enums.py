@@ -106,6 +106,28 @@ LEADERSHIP_SENIORITY_BANDS: tuple[str, ...] = (
 )
 LEADERSHIP_SIGNAL_SOURCES: tuple[str, ...] = ("linkedin_history", "blog_event", "snapshot_comparison")
 
+# --- Signal categories (first-class grouping of opportunities) --------------
+# Every opportunity belongs to exactly one signal_category. LEADERSHIP is a
+# first-class category of its own: people-movement events (executive hires,
+# leadership & role changes) are separated OUT of the general NEWS feed so they
+# can be filtered, counted, and charted independently everywhere in the platform.
+# The category is derived deterministically from opportunity_type (see
+# signal_category_for) and persisted on the row (master_db.models.Opportunity).
+SIGNAL_CATEGORIES: tuple[str, ...] = ("LEADERSHIP", "NEWS")
+# The opportunity_types that constitute the LEADERSHIP category (company-level
+# people-movement events). Everything else is NEWS.
+LEADERSHIP_OPPORTUNITY_TYPES: tuple[str, ...] = ("EXECUTIVE_HIRE", "LEADERSHIP_CHANGE", "ROLE_CHANGE")
+
+
+def signal_category_for(opportunity_type: str | None) -> str:
+    """Classify an opportunity into its first-class signal category.
+
+    Deterministic and dependency-free so every writer (news engine, ingestors) and
+    the DB backfill agree. Leadership people-movement types are their OWN category;
+    all other market events are NEWS."""
+    return "LEADERSHIP" if (opportunity_type or "").upper() in LEADERSHIP_OPPORTUNITY_TYPES else "NEWS"
+
+
 # --- Outreach (native module) ----------------------------------------------
 # Outreach is a first-class platform module (not a separate app): it layers an
 # engagement *cycle* on top of the existing companies / decision_makers /
@@ -348,6 +370,48 @@ EXECUTION_STATUSES: tuple[str, ...] = ("running", "success", "partial", "failed"
 # (no Graph mail configured); "skipped" = nothing to send / manual run; "sent" /
 # "failed" = a real Graph sendMail was attempted. Never blocks the pipeline.
 NOTIFICATION_STATUSES: tuple[str, ...] = ("pending", "sent", "failed", "skipped", "logged")
+
+# --- Decision Maker Intelligence — MANUAL per-company jobs -------------------
+# DM intelligence is never scheduled (the Apify actor has a per-lead cost); it is
+# run manually from the Decision Makers page for a chosen set of companies, each
+# with its OWN requested lead count. A job tracks live progress at the job level
+# and per company. See master_db.models.DmIntelligenceJob / DmIntelligenceJobItem
+# and backend/dm_intelligence_jobs.py.
+DM_JOB_STATUSES: tuple[str, ...] = ("queued", "running", "completed", "partial", "failed")
+DM_JOB_ITEM_STATUSES: tuple[str, ...] = ("queued", "running", "completed", "failed")
+
+# --- Historical import jobs (reusable import-run tracking; Phase 3) ----------
+# One row per historical-data import run (company + decision-maker synchronization).
+# "previewed" = a read-only reconciliation preview was generated (no data written yet);
+# running/completed/failed/cancelled cover the later apply step. See master_db.models
+# .ImportJob and backend/import_repo.py.
+IMPORT_JOB_STATUSES: tuple[str, ...] = (
+    "previewed", "running", "completed", "partial", "failed", "rolled_back", "cancelled",
+)
+# Ordered stages of a transactional import (Phase 4). Recorded on ImportJob.current_stage.
+IMPORT_STAGES: tuple[str, ...] = (
+    "create_companies", "update_companies", "create_decision_makers",
+    "update_decision_makers", "refresh_relationships", "post_import_hooks",
+)
+
+# --- Import review & approval (Phase 5) -------------------------------------
+# Every record in a preview carries one explicit review state; only 'approved' and
+# 'resolved' records reach the transaction engine at commit time.
+REVIEW_STATES: tuple[str, ...] = ("pending", "approved", "rejected", "skipped", "resolved")
+# Which review bucket a record belongs to (derived from its sync classification).
+REVIEW_CATEGORIES: tuple[str, ...] = (
+    "new_company", "updated_company", "new_decision_maker", "updated_decision_maker",
+    "conflict", "duplicate", "invalid", "unchanged",
+)
+REVIEW_KINDS: tuple[str, ...] = ("company", "decision_maker")
+# Per-field decision on an update/conflict field.
+REVIEW_FIELD_CHOICES: tuple[str, ...] = ("keep_platform", "accept_historical")
+# Audit-trail action verbs.
+REVIEW_EVENT_ACTIONS: tuple[str, ...] = (
+    "approve", "reject", "skip", "resolve_field", "bulk_approve", "bulk_reject", "reset",
+)
+# Review states whose records are applied by the import engine.
+REVIEW_IMPORTABLE_STATES: tuple[str, ...] = ("approved", "resolved")
 
 # --- News Intelligence (multi-source ingestion + rich opportunities) --------
 # Source adapters the News Collection Engine can pull from. "file" is the existing

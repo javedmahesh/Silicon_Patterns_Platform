@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Building2 } from "lucide-react";
 
+import { AddCompanyModal } from "@/components/companies/AddCompanyModal";
 import { CompanyPeek } from "@/components/CompanyPeek";
 import { DataTable } from "@/components/data/DataTable";
 import { GradeBadge } from "@/components/data/GradeBadge";
@@ -11,8 +12,10 @@ import { FilterBar, FilterSelect } from "@/components/shell/FilterBar";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { PeekDrawer } from "@/components/shell/PeekDrawer";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorState } from "@/components/ui/EmptyState";
 import { SearchInput } from "@/components/ui/Input";
+import { useAuth } from "@/lib/auth/store";
 import { useDebounce } from "@/hooks/useDebounce";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { GRADE_OPTIONS, PROSPECT_OPTIONS, TIER_OPTIONS } from "@/lib/constants";
@@ -87,6 +90,8 @@ const columns: ColumnDef<CompanySummary, any>[] = [
 
 export function CompaniesPage() {
   const { values, setValue, setMany, clear, activeCount } = useUrlFilters(KEYS);
+  const { isManager } = useAuth();
+  const [addOpen, setAddOpen] = useState(false);
   const page = Math.max(1, Number(values.page) || 1);
   const sort = values.sort || "lead_score";
   const order = values.order === "asc" ? "asc" : "desc";
@@ -129,6 +134,13 @@ export function CompaniesPage() {
       <PageHeader
         title="Companies"
         subtitle={data ? `${fmtInt(data.total)} companies` : "The company universe"}
+        actions={
+          isManager ? (
+            <Button variant="primary" size="sm" onClick={() => setAddOpen(true)}>
+              <Building2 size={14} /> Add company
+            </Button>
+          ) : undefined
+        }
       >
         <FilterBar activeCount={activeCount} onClear={clearAll}>
           <SearchInput
@@ -206,6 +218,8 @@ export function CompaniesPage() {
           />
         )}
       </PeekDrawer>
+
+      <AddCompanyModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={setSelected} />
     </>
   );
 }

@@ -148,6 +148,23 @@ def test_single_component_runs_engine_before_ingest(session, monkeypatch):
     assert engine_calls == [], "run_engine=False stays ingest-only (no engine subprocess)"
 
 
+def test_engine_launch_oserror_is_a_clean_stage_failure(session, monkeypatch):
+    """A subprocess launch OSError (e.g. WinError 267 'directory name is invalid'
+    when the engine's working dir is unusable) must surface as a clean `failed`
+    stage with a useful note — not an unhandled exception that bubbles up."""
+    import orchestrator.orchestrator as orch_mod
+
+    def boom(cmd, **kwargs):
+        raise NotADirectoryError(267, "The directory name is invalid")
+
+    monkeypatch.setattr(orch_mod.subprocess, "run", boom)
+
+    res = Orchestrator(session, run_engine=True).run_stage("industry")
+    assert res.status == "failed"
+    assert "engine launch failed" in res.notes
+    assert "Industry_Discovery_Scraper_FINAL" in res.notes  # names the offending cwd
+
+
 def test_effective_run_engine_default_on_for_single_component():
     """The CLI default: an unspecified flag runs the engine for a single component
     but not for `run all`; an explicit flag always wins."""
@@ -182,13 +199,22 @@ def test_health_report_reads_schedule(session):
 def test_pipeline_grouping_and_resume(session, monkeypatch):
     # Mock missing Apify credentials
     monkeypatch.setenv("APIFY_API_TOKEN", "")
+    # decision_maker_intelligence can still be run explicitly (it stays in STAGES);
+    # it is simply no longer part of the AUTOMATIC pipeline (PIPELINE_ORDER).
     Orchestrator(session).run_pipeline(components=["scoring", "decision_maker_intelligence"])
     pids = {r.pipeline_id for r in session.scalars(select(PipelineRun)) if r.pipeline_id}
     assert pids and all(p.startswith("run-") for p in pids)
+    # the manual DM stage was recorded (skipped without credentials)
+    dm = session.scalars(
+        select(PipelineRun).where(PipelineRun.component == "decision_maker_intelligence")
+    ).first()
+    assert dm is not None and dm.status == "skipped"
 
-    # decision_maker_intelligence was skipped (not success) -> resume re-runs only it
+    # Resume only ever re-runs unfinished AUTOMATIC stages. decision_maker_intelligence
+    # is manual-only (not in PIPELINE_ORDER), so resume never re-runs it — even though
+    # it was skipped above. scoring succeeded, so there is nothing to resume.
     resumed = Orchestrator(session).run_pipeline(resume=True)
-    assert [r.component for r in resumed] == ["decision_maker_intelligence"]
+    assert [r.component for r in resumed] == []
 
 
 def test_derive_status_no_false_green():

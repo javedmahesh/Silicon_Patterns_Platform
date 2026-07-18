@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Clock } from "lucide-react";
+import { ChevronDown, ChevronRight, Clock, ExternalLink } from "lucide-react";
 
+import { EditScheduleModal } from "@/components/scheduler/EditScheduleModal";
 import { DataTable } from "@/components/data/DataTable";
 import { NumericCell } from "@/components/data/NumericCell";
 import { Pager } from "@/components/data/Pager";
@@ -14,8 +16,8 @@ import { Modal } from "@/components/ui/Modal";
 import { Spinner } from "@/components/ui/Spinner";
 import { toast } from "@/components/ui/Toast";
 import { apiErrorMessage } from "@/lib/api/client";
-import { useRunHistory, useRunNow, useSchedulerStatus } from "@/lib/api/queries";
-import type { ExecutionOut } from "@/lib/api/types";
+import { useRunEngineRecords, useRunHistory, useRunNow, useSchedulerStatus } from "@/lib/api/queries";
+import type { ExecutionOut, ExecutionStageOut } from "@/lib/api/types";
 import { useAuth } from "@/lib/auth/store";
 import { enumLabel, fmtDateTime, fmtInt } from "@/lib/format";
 
@@ -25,6 +27,11 @@ const STATUS_TONE: Record<string, Tone> = {
 };
 const NOTIFY_TONE: Record<string, Tone> = {
   sent: "positive", logged: "accent", failed: "danger", skipped: "neutral", pending: "neutral",
+};
+// Per-record operation semantics (fetched vs changed) — see the drill-down.
+const OP_TONE: Record<string, Tone> = {
+  created: "positive", updated: "accent", derived: "accent", scored: "accent",
+  existing: "neutral", duplicate: "neutral", skipped: "neutral", rejected: "danger",
 };
 
 function fmtDuration(ms: number): string {
@@ -37,6 +44,7 @@ export function RunHistoryPage() {
   const { isManager } = useAuth();
   const [page, setPage] = useState(1);
   const [detail, setDetail] = useState<ExecutionOut | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
 
   const status = useSchedulerStatus();
   const history = useRunHistory({ page, page_size: 20 });
@@ -99,10 +107,15 @@ export function RunHistoryPage() {
         subtitle="Automated Standard Runs, schedule, and per-run execution history"
         actions={
           isManager ? (
-            <Button variant="primary" size="sm" onClick={triggerRunNow}
-                    disabled={runNow.isPending || s?.is_run_in_progress}>
-              {s?.is_run_in_progress ? "Run in progress…" : runNow.isPending ? "Starting…" : "Run now"}
-            </Button>
+            <>
+              <Button variant="default" size="sm" onClick={() => setEditOpen(true)} disabled={!s}>
+                Edit schedule
+              </Button>
+              <Button variant="primary" size="sm" onClick={triggerRunNow}
+                      disabled={runNow.isPending || s?.is_run_in_progress}>
+                {s?.is_run_in_progress ? "Run in progress…" : runNow.isPending ? "Starting…" : "Run now"}
+              </Button>
+            </>
           ) : undefined
         }
       />
@@ -138,6 +151,7 @@ export function RunHistoryPage() {
       </div>
 
       {detail && <RunDetailModal run={detail} onClose={() => setDetail(null)} />}
+      {editOpen && s && <EditScheduleModal status={s} onClose={() => setEditOpen(false)} />}
     </>
   );
 }
@@ -164,21 +178,23 @@ function RunDetailModal({ run, onClose }: { run: ExecutionOut; onClose: () => vo
 
         <div>
           <div className="mb-1.5 text-13 font-medium text-fg">Engines</div>
+          <p className="mb-1.5 text-11 text-fg-subtle">
+            Click an engine to see the exact records it processed in this run.
+          </p>
           <div className="divide-y divide-line rounded-md border border-line">
             {run.stages.length === 0 ? (
               <p className="p-3 text-12 text-fg-subtle">No engine stages recorded.</p>
             ) : run.stages.map((st) => (
-              <div key={st.component} className="flex items-center gap-3 px-3 py-2 text-12">
-                <span className="min-w-0 flex-1 truncate text-fg">{enumLabel(st.component)}</span>
-                <Badge tone={STATUS_TONE[st.status] ?? "neutral"}>{enumLabel(st.status)}</Badge>
-                <span className="tabular w-24 text-right text-fg-muted">{fmtInt(st.processed)} recs</span>
-              </div>
+              <EngineRow key={st.component} runId={run.run_id} stage={st} />
             ))}
           </div>
         </div>
 
         <div>
           <div className="mb-1.5 text-13 font-medium text-fg">Platform totals</div>
+          <p className="mb-1.5 text-11 text-fg-subtle">
+            Current database totals — not specific to this run.
+          </p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-12 sm:grid-cols-3">
             {totalRows.map(([label, key]) => (
               <div key={key} className="flex justify-between gap-2">
@@ -190,5 +206,108 @@ function RunDetailModal({ run, onClose }: { run: ExecutionOut; onClose: () => vo
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** One engine row in the Run Details modal — expandable into its per-run records. */
+function EngineRow({ runId, stage }: { runId: string; stage: ExecutionStageOut }) {
+  const [open, setOpen] = useState(false);
+  const Chevron = open ? ChevronDown : ChevronRight;
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-3 px-3 py-2 text-left text-12 hover:bg-raised"
+        aria-expanded={open}
+      >
+        <Chevron size={14} className="shrink-0 text-fg-subtle" />
+        <span className="min-w-0 flex-1 truncate text-fg">{enumLabel(stage.component)}</span>
+        <Badge tone={STATUS_TONE[stage.status] ?? "neutral"}>{enumLabel(stage.status)}</Badge>
+        <span className="tabular w-24 text-right text-fg-muted">{fmtInt(stage.processed)} processed</span>
+      </button>
+      {open && <EngineRecords runId={runId} engine={stage.component} />}
+    </div>
+  );
+}
+
+/** Lazy-loaded drill-down: exactly the records this engine touched in this run. */
+function EngineRecords({ runId, engine }: { runId: string; engine: string }) {
+  const [page, setPage] = useState(1);
+  const q = useRunEngineRecords(runId, engine, page, true);
+
+  if (q.isLoading) {
+    return <div className="grid place-items-center py-4"><Spinner size={16} /></div>;
+  }
+  if (q.isError) {
+    return (
+      <div className="px-3 py-3">
+        <ErrorState title="Couldn't load records" error={q.error} onRetry={q.refetch} />
+      </div>
+    );
+  }
+  const data = q.data;
+  if (!data) return null;
+
+  if (!data.available) {
+    return (
+      <p className="bg-raised px-3 py-3 text-11 text-fg-subtle">
+        Detailed record tracking isn't available for this run (it ran before per-record
+        tracking was enabled). Future runs capture the exact records each engine processes.
+      </p>
+    );
+  }
+  if (data.total === 0) {
+    return (
+      <p className="bg-raised px-3 py-3 text-11 text-fg-subtle">
+        This engine processed no records in this run.
+      </p>
+    );
+  }
+
+  const breakdown = Object.entries(data.breakdown).sort((a, b) => b[1] - a[1]);
+  return (
+    <div className="bg-raised px-3 py-2">
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        <span className="text-11 text-fg-subtle">{fmtInt(data.total)} records ·</span>
+        {breakdown.map(([op, n]) => (
+          <Badge key={op} tone={OP_TONE[op] ?? "neutral"}>{enumLabel(op)} {fmtInt(n)}</Badge>
+        ))}
+      </div>
+      <div className="divide-y divide-line rounded-md border border-line bg-surface">
+        {data.items.map((it) => (
+          <div key={`${it.entity_table}:${it.entity_id}`} className="flex items-start gap-2 px-2.5 py-2 text-12">
+            <Badge tone={OP_TONE[it.operation] ?? "neutral"}>{enumLabel(it.operation)}</Badge>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                {it.link ? (
+                  <Link to={it.link} className="truncate font-medium text-accent hover:underline">{it.title}</Link>
+                ) : (
+                  <span className="truncate font-medium text-fg">{it.title}</span>
+                )}
+                {it.url && (
+                  <a href={it.url} target="_blank" rel="noreferrer"
+                     className="shrink-0 text-fg-subtle hover:text-fg" aria-label="Open source">
+                    <ExternalLink size={12} />
+                  </a>
+                )}
+              </div>
+              {it.subtitle && <div className="truncate text-11 text-fg-subtle">{it.subtitle}</div>}
+              {it.fields.length > 0 && (
+                <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-11 text-fg-muted">
+                  {it.fields.map((f, i) => (
+                    <span key={i}><span className="text-fg-subtle">{f.label}:</span> {f.value}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      {data.total > data.items.length && (
+        <Pager page={page} pages={Math.ceil(data.total / 25)} total={data.total}
+               pageSize={25} onPage={setPage} />
+      )}
+    </div>
   );
 }

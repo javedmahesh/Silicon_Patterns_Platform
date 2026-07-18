@@ -25,7 +25,7 @@ from config.enums import USER_ROLES
 from master_db.models import PipelineRun, User
 from orchestrator.health import health_report
 from orchestrator.orchestrator import Orchestrator, StageResult
-from orchestrator.stages import PIPELINE_ORDER
+from orchestrator.stages import PIPELINE_ORDER, STAGES
 
 app = typer.Typer(name="sp-platform", help="Silicon Patterns platform orchestrator", add_completion=False)
 console = Console()
@@ -117,8 +117,11 @@ def run(
     """Run a single component or the full pipeline (industry->blog->career->decision_maker_intelligence->scoring)."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     comp = component.lower()
-    if comp not in (set(PIPELINE_ORDER) | {"all"}):
-        console.print(f"[red]unknown component '{component}'. Use: {', '.join(PIPELINE_ORDER)}, all[/red]")
+    # `all` runs the automatic PIPELINE_ORDER (no decision_maker_intelligence — it is
+    # manual-only). A single-component run may still target ANY registered stage,
+    # including decision_maker_intelligence, so its manual CLI path keeps working.
+    if comp not in (set(STAGES) | {"all"}):
+        console.print(f"[red]unknown component '{component}'. Use: {', '.join(STAGES)}, all[/red]")
         raise typer.Exit(2)
     if limit is not None and limit < 1:
         console.print("[red]--limit must be a positive integer[/red]")
@@ -215,8 +218,10 @@ def schedule() -> None:
     console.print("  Windows Task Scheduler (daily 02:00):")
     console.print('    schtasks /Create /SC DAILY /ST 02:00 /TN "SP Platform Daily" ^')
     console.print('      /TR "python -m orchestrator.cli run all --trigger daily" /SD 2026-06-13\n')
-    console.print("  Weekly (industry/decision_maker_intelligence) — Mondays 03:00:")
-    console.print("    0 3 * * 1  cd /path/... && python -m orchestrator.cli run industry --trigger weekly && python -m orchestrator.cli run decision_maker_intelligence --trigger weekly\n")
+    console.print("  Weekly (industry) — Mondays 03:00:")
+    console.print("    0 3 * * 1  cd /path/... && python -m orchestrator.cli run industry --trigger weekly\n")
+    console.print("  [dim]decision_maker_intelligence is MANUAL only (paid Apify actor) — run it per-company\n"
+                  "  from the Decision Makers page, or `run decision_maker_intelligence` on demand.[/dim]\n")
     console.print("  systemd timer / GitHub Actions cron work the same way — call `run all --trigger daily`.")
 
 
@@ -435,6 +440,146 @@ def ml_embed_roles(db: Path = typer.Option(DEFAULT_DB, "--db")) -> None:
         emb.embed_titles(s, titles, get_settings())
         s.commit()
     console.print(f"[green]embedded/cached {before} distinct roles[/green]")
+
+
+sync_app = typer.Typer(help="Historical data synchronization (Phase 2 — companies, read-only preview).")
+app.add_typer(sync_app, name="sync")
+
+
+@sync_app.command("preview")
+def sync_preview(
+    file: Path = typer.Option(..., "--file", help="Uploaded historical Excel export"),
+    db: Path = typer.Option(DEFAULT_DB, "--db"),
+    sheet: str | None = typer.Option(None, "--sheet", help="Worksheet name (auto-detected if omitted)"),
+    out: Path | None = typer.Option(None, "--out", help="Write the full preview JSON here"),
+) -> None:
+    """Reconcile a historical company export against the platform (no DB writes)."""
+    import json
+    from sync import load_historical_companies, reconcile_companies
+
+    records = load_historical_companies(str(file), sheet=sheet)
+    with _open(db) as s:
+        preview = reconcile_companies(s, records)      # read-only
+    st = preview.stats
+    table = Table(title=f"Company sync preview — {len(records)} distinct companies")
+    for col in ("new", "update", "unchanged", "duplicate", "conflict", "alias", "exact", "fuzzy"):
+        table.add_column(col)
+    table.add_row(str(st.new), str(st.updated), str(st.unchanged), str(st.duplicates),
+                  str(st.conflicts), str(st.alias_matches), str(st.exact_domain_matches),
+                  str(st.fuzzy_matches))
+    console.print(table)
+    console.print(f"[dim]fields: fill={st.fields_to_fill} update={st.fields_to_update} "
+                  f"conflict={st.fields_conflicting}[/dim]")
+    if out is not None:
+        out.write_text(json.dumps(preview.to_dict(), indent=2), encoding="utf-8")
+        console.print(f"[green]wrote {out}[/green]")
+
+
+@sync_app.command("dm-preview")
+def sync_dm_preview(
+    file: Path = typer.Option(..., "--file", help="Uploaded historical Excel export"),
+    db: Path = typer.Option(DEFAULT_DB, "--db"),
+    sheet: str | None = typer.Option(None, "--sheet"),
+    out: Path | None = typer.Option(None, "--out", help="Write the full preview JSON here"),
+) -> None:
+    """Reconcile historical decision makers against the platform (no DB writes)."""
+    import json
+    from sync import load_historical_decision_makers, reconcile_decision_makers
+
+    records = load_historical_decision_makers(str(file), sheet=sheet)
+    with _open(db) as s:
+        preview = reconcile_decision_makers(s, records)      # read-only
+    st = preview.stats
+    table = Table(title=f"Decision-maker sync preview — {len(records)} rows")
+    for col in ("new", "update", "unchanged", "duplicate", "conflict", "invalid", "li", "email", "name"):
+        table.add_column(col)
+    table.add_row(str(st.new), str(st.updated), str(st.unchanged), str(st.duplicates),
+                  str(st.conflicts), str(st.invalid), str(st.linkedin_matches),
+                  str(st.email_matches), str(st.name_matches))
+    console.print(table)
+    console.print(f"[dim]companies resolved={st.companies_resolved} unresolved={st.companies_unresolved} "
+                  f"| fields fill={st.fields_to_fill} conflict={st.fields_conflicting}[/dim]")
+    if out is not None:
+        out.write_text(json.dumps(preview.to_dict(), indent=2), encoding="utf-8")
+        console.print(f"[green]wrote {out}[/green]")
+
+
+@sync_app.command("import")
+def sync_import(
+    file: Path = typer.Option(..., "--file", help="Uploaded historical Excel export"),
+    db: Path = typer.Option(DEFAULT_DB, "--db"),
+    commit: bool = typer.Option(False, "--commit/--dry-run",
+                                help="Commit the transaction (default: dry-run, zero writes)"),
+) -> None:
+    """Apply the company+DM synchronization previews in one transaction (Phase 4)."""
+    from sync import (load_historical_companies, load_historical_decision_makers,
+                      reconcile_companies, reconcile_decision_makers)
+    from backend.import_engine import run_import
+
+    with _open(db) as s:
+        cp = reconcile_companies(s, load_historical_companies(str(file))).to_dict()
+        dp = reconcile_decision_makers(s, load_historical_decision_makers(str(file))).to_dict()
+        report = run_import(s, company_preview=cp, dm_preview=dp, commit=commit)
+    table = Table(title=f"Import {'COMMIT' if commit else 'DRY-RUN'} — status={report.status}")
+    for col in ("co_created", "co_updated", "dm_created", "dm_updated", "unchanged",
+                "dup_skip", "conflict_skip", "invalid_skip"):
+        table.add_column(col)
+    table.add_row(str(report.companies_created), str(report.companies_updated),
+                  str(report.decision_makers_created), str(report.decision_makers_updated),
+                  str(report.unchanged), str(report.duplicates_skipped),
+                  str(report.conflicts_skipped), str(report.invalid_skipped))
+    console.print(table)
+    console.print(f"[dim]duration={report.duration_ms}ms warnings={len(report.warnings)} "
+                  f"errors={len(report.errors)}[/dim]")
+    for e in report.errors:
+        console.print(f"[red]{e}[/red]")
+
+
+@sync_app.command("refresh")
+def sync_refresh(
+    import_id: str = typer.Option(..., "--import-id", help="ImportJob import_id to refresh"),
+    db: Path = typer.Option(DEFAULT_DB, "--db"),
+    retry_failed: bool = typer.Option(False, "--retry-failed", help="Re-run only failed stages"),
+) -> None:
+    """Run (or retry) the Phase-7 post-import intelligence refresh for an import."""
+    from backend import import_repo
+    from backend.post_import_pipeline import retry_failed as _retry, run_post_import_refresh
+
+    with _open(db) as s:
+        job = import_repo.get_import_job(s, import_id)
+        if job is None:
+            console.print(f"[red]no import job '{import_id}'[/red]")
+            raise typer.Exit(1)
+        stats = job.stats or {}
+        if retry_failed:
+            summary = _retry(s, import_id)
+        else:
+            summary = run_post_import_refresh(
+                s, import_id=import_id, domains=stats.get("affected_company_domains", []),
+                dm_ids=stats.get("affected_dm_ids", []))
+    table = Table(title=f"Post-import refresh — {import_id}")
+    for col in ("stage", "status", "processed", "ms", "notes"):
+        table.add_column(col)
+    for st in summary.stages:
+        color = "green" if st["status"] == "success" else "red"
+        table.add_row(st["stage"], f"[{color}]{st['status']}[/{color}]", str(st.get("processed", 0)),
+                      str(st.get("duration_ms", 0)), (st.get("notes") or st.get("error") or "")[:44])
+    console.print(table)
+
+
+@sync_app.command("seed-aliases")
+def sync_seed_aliases(db: Path = typer.Option(DEFAULT_DB, "--db")) -> None:
+    """Persist the curated well-known company aliases (AMD ↔ Advanced Micro Devices …).
+
+    Writes CompanyAlias rows for canonical companies that already exist — reusable by
+    every engine. Opt-in (this DOES write); the sync preview never calls it.
+    """
+    from sync.aliases import seed_persisted_aliases
+
+    with _open(db) as s:
+        n = seed_persisted_aliases(s)
+        s.commit()
+    console.print(f"[green]seeded {n} well-known aliases[/green]")
 
 
 def main() -> None:

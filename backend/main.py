@@ -31,9 +31,7 @@ from backend.routers import (
     campaigns,
     companies,
     crm,
-    cs,
     custom_objects,
-    deals,
     decision_makers,
     demand_signals,
     health,
@@ -50,6 +48,7 @@ from backend.routers import (
     revops,
     scheduler as scheduler_router,
     search,
+    sync as sync_router,
     team,
     workflows,
 )
@@ -220,13 +219,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(campaigns.router)
     app.include_router(campaigns.sequences_router)
     app.include_router(campaigns.enrollments_router)
-    # Enterprise CRM Phase 2: pipelines (kanban/forecast/analytics) and deals.
-    app.include_router(deals.pipelines_router)
-    app.include_router(deals.deals_router)
     # Enterprise CRM Phase 3: team collaboration, work queue, comments, notifications.
     app.include_router(team.router)
-    # Enterprise CRM Phase 4: customer success & account management.
-    app.include_router(cs.router)
     # Enterprise CRM Phase 5: revenue operations, forecasting & executive analytics.
     app.include_router(revops.router)
     # Enterprise CRM Phase 6: workflow automation & business process engine.
@@ -250,6 +244,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(scheduler_router.router)
     # Machine Learning Foundation: feedback capture + feature store + registries.
     app.include_router(ml_router.router)
+    # Historical data synchronization (Phase 2): read-only company reconciliation preview.
+    app.include_router(sync_router.router)
     guarded = (companies, leads, opportunities, demand_signals, decision_makers,
                leadership_signals, analytics, pipeline, review, alerts)
     for module in guarded:

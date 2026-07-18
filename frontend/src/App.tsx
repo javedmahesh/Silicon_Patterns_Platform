@@ -17,6 +17,7 @@ const CompaniesPage = lazy(() => import("@/pages/CompaniesPage").then((m) => ({ 
 const CompanyProfilePage = lazy(() => import("@/pages/CompanyProfilePage").then((m) => ({ default: m.CompanyProfilePage })));
 const WorkspacePage = lazy(() => import("@/pages/WorkspacePage").then((m) => ({ default: m.WorkspacePage })));
 const OpportunitiesPage = lazy(() => import("@/pages/OpportunitiesPage").then((m) => ({ default: m.OpportunitiesPage })));
+const LeadershipPage = lazy(() => import("@/pages/LeadershipPage").then((m) => ({ default: m.LeadershipPage })));
 const DecisionMakersPage = lazy(() => import("@/pages/DecisionMakersPage").then((m) => ({ default: m.DecisionMakersPage })));
 const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage").then((m) => ({ default: m.AnalyticsPage })));
 const ReviewQueuePage = lazy(() => import("@/pages/ReviewQueuePage").then((m) => ({ default: m.ReviewQueuePage })));
@@ -26,24 +27,21 @@ const TeamPage = lazy(() => import("@/pages/TeamPage").then((m) => ({ default: m
 const AdministrationPage = lazy(() =>
   import("@/pages/AdministrationPage").then((m) => ({ default: m.AdministrationPage })),
 );
+// Historical Import (Phase 6) — upload / preview / review / commit / history.
+const HistoricalImportPage = lazy(() =>
+  import("@/pages/import/HistoricalImportPage").then((m) => ({ default: m.HistoricalImportPage })),
+);
+const ImportDetailPage = lazy(() =>
+  import("@/pages/import/ImportDetailPage").then((m) => ({ default: m.ImportDetailPage })),
+);
 // Enterprise CRM Phase 1 — campaigns / sequences / enrollments
 const CampaignListPage = lazy(() => import("@/pages/campaigns/CampaignListPage").then((m) => ({ default: m.CampaignListPage })));
 const CampaignDetailPage = lazy(() => import("@/pages/campaigns/CampaignDetailPage").then((m) => ({ default: m.CampaignDetailPage })));
 const SequenceListPage = lazy(() => import("@/pages/campaigns/SequenceListPage").then((m) => ({ default: m.SequenceListPage })));
 const SequenceDetailPage = lazy(() => import("@/pages/campaigns/SequenceDetailPage").then((m) => ({ default: m.SequenceDetailPage })));
 const EnrollmentListPage = lazy(() => import("@/pages/campaigns/EnrollmentListPage").then((m) => ({ default: m.EnrollmentListPage })));
-// Enterprise CRM Phase 2 — deals / pipeline
-const PipelineBoardPage = lazy(() => import("@/pages/deals/PipelineBoardPage").then((m) => ({ default: m.PipelineBoardPage })));
-const DealListPage = lazy(() => import("@/pages/deals/DealListPage").then((m) => ({ default: m.DealListPage })));
-const DealDetailPage = lazy(() => import("@/pages/deals/DealDetailPage").then((m) => ({ default: m.DealDetailPage })));
-const PipelineAnalyticsPage = lazy(() => import("@/pages/deals/PipelineAnalyticsPage").then((m) => ({ default: m.PipelineAnalyticsPage })));
 // Standard Scheduled Runs — scheduler status + run history
 const RunHistoryPage = lazy(() => import("@/pages/scheduler/RunHistoryPage").then((m) => ({ default: m.RunHistoryPage })));
-// Enterprise CRM Phase 4 — customer success
-const CsDashboardPage = lazy(() => import("@/pages/cs/CsDashboardPage").then((m) => ({ default: m.CsDashboardPage })));
-const AccountListPage = lazy(() => import("@/pages/cs/AccountListPage").then((m) => ({ default: m.AccountListPage })));
-const AccountDetailPage = lazy(() => import("@/pages/cs/AccountDetailPage").then((m) => ({ default: m.AccountDetailPage })));
-const RenewalsPage = lazy(() => import("@/pages/cs/RenewalsPage").then((m) => ({ default: m.RenewalsPage })));
 // Outreach is a native module (no iframe): each page is a first-class route.
 const OutreachOverviewPage = lazy(() => import("@/pages/outreach/OutreachOverviewPage").then((m) => ({ default: m.OutreachOverviewPage })));
 const OutreachLeadsPage = lazy(() => import("@/pages/outreach/OutreachLeadsPage").then((m) => ({ default: m.OutreachLeadsPage })));
@@ -106,6 +104,8 @@ export default function App() {
         <Route path="/companies" element={<CompaniesPage />} />
         <Route path="/companies/:domain" element={<CompanyProfilePage />} />
         <Route path="/opportunities" element={<OpportunitiesPage />} />
+        {/* Leadership hub — person-level leadership signals + leadership market events. */}
+        <Route path="/leadership" element={<LeadershipPage />} />
         <Route path="/decision-makers" element={<DecisionMakersPage />} />
         <Route path="/analytics" element={<AnalyticsPage />} />
         <Route path="/review-queue" element={<ReviewQueuePage />} />
@@ -117,14 +117,6 @@ export default function App() {
         <Route path="/campaigns/sequences/:id" element={<SequenceDetailPage />} />
         <Route path="/campaigns/enrollments" element={<EnrollmentListPage />} />
         <Route path="/campaigns/:id" element={<CampaignDetailPage />} />
-        <Route path="/deals" element={<PipelineBoardPage />} />
-        <Route path="/deals/list" element={<DealListPage />} />
-        <Route path="/deals/analytics" element={<PipelineAnalyticsPage />} />
-        <Route path="/deals/:id" element={<DealDetailPage />} />
-        <Route path="/customer-success" element={<CsDashboardPage />} />
-        <Route path="/customer-success/accounts" element={<AccountListPage />} />
-        <Route path="/customer-success/accounts/:id" element={<AccountDetailPage />} />
-        <Route path="/customer-success/renewals" element={<RenewalsPage />} />
         <Route path="/outreach" element={<OutreachOverviewPage />} />
         <Route path="/outreach/leads" element={<OutreachLeadsPage />} />
         <Route path="/outreach/leads/:id" element={<OutreachLeadDetailPage />} />
@@ -135,6 +127,9 @@ export default function App() {
         <Route path="/outreach/tasks" element={<OutreachTasksPage />} />
         <Route element={<RequireManager />}>
           <Route path="/team" element={<TeamPage />} />
+          {/* Managers review; upload & commit are admin-gated inside the page + backend. */}
+          <Route path="/historical-import" element={<HistoricalImportPage />} />
+          <Route path="/historical-import/:importId" element={<ImportDetailPage />} />
         </Route>
         <Route element={<RequireAdmin />}>
           <Route path="/administration" element={<AdministrationPage />} />

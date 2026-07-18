@@ -269,11 +269,19 @@ def recommend_all(session: Session) -> list[dict]:
 
 def rebuild(session: Session) -> dict[str, int]:
     """Recompute every company's recommendation (idempotent: clear + insert)."""
+    from orchestrator import provenance
+
     recs = recommend_all(session)
     session.execute(delete(EngagementRecommendation))
     session.flush()
     stamp = datetime.now(timezone.utc)
     for r in recs:
         session.add(EngagementRecommendation(**r, model_version=MODEL_VERSION, computed_at=stamp))
+        provenance.record(session, "engagement_recommendations", r["company_domain"], "derived", {
+            "offering": r.get("offering", ""),
+            "business_need": r.get("business_need", ""),
+            "confidence": r.get("confidence"),
+            "confidence_label": r.get("confidence_label", ""),
+        })
     session.commit()
     return {"total": len(recs)}

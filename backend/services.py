@@ -19,7 +19,18 @@ from backend import security
 from backend import workflow_service
 from backend.config import Settings
 from backend.dependencies import Pagination
-from config.enums import ASSIGNMENT_STATUSES, LEAD_REVIEW_STATUSES, USER_ROLES, USER_STATUSES
+from config.enums import (
+    ASSIGNMENT_STATUSES,
+    COMPANY_TIERS,
+    COMPLIANCE_FLAGS,
+    CONFIDENCE_LEVELS,
+    LEAD_REVIEW_STATUSES,
+    LEADERSHIP_MOVEMENT_TYPES,
+    LEADERSHIP_SENIORITY_BANDS,
+    PROSPECT_TYPES,
+    USER_ROLES,
+    USER_STATUSES,
+)
 from lead_scoring.config import ScoringConfig
 from lead_scoring.human_review import adjusted_score, disagreement
 from backend.schemas import (
@@ -113,6 +124,30 @@ def list_companies(session: Session, *, pagination: Pagination, q, domain, tier,
     return Page.build(items, total, pagination.page, pagination.page_size)
 
 
+def create_company(session: Session, *, payload, actor) -> CompanySummary:
+    """Manually add a company to the universe. Normalizes the domain and derives
+    name_key / canonical id with the SAME normalizer the ingestion resolver uses, so
+    a hand-added company shares the platform's join key and dedupes correctly.
+    Rejects an invalid domain (422) or an existing one (409)."""
+    from integration.normalizer import canonical_company_id, name_key, normalize_domain
+
+    domain = normalize_domain(payload.company_domain)
+    if not domain:
+        raise _lifecycle_error("invalid_domain",
+                               "Enter a valid company domain, e.g. acme.com", status_code=422)
+    if repo.get_company(session, domain) is not None:
+        raise _lifecycle_error("company_exists",
+                               f"A company with domain {domain} already exists.", status_code=409)
+    name = (payload.company_name or "").strip() or domain
+    company = repo.create_company(
+        session, company_domain=domain, company_name=name, name_key=name_key(name),
+        canonical_company_id=canonical_company_id(domain, name),
+        country=(payload.country or "").strip(), website=(payload.website or "").strip(),
+        industry_category=(payload.industry_category or "").strip(),
+    )
+    return CompanySummary.model_validate(company)
+
+
 def get_company_profile(session: Session, domain: str) -> CompanyProfile:
     company = repo.get_company(session, domain)
     if company is None:
@@ -173,12 +208,13 @@ def list_leads(session: Session, *, pagination: Pagination, grade, tier, prospec
 def list_opportunities(session: Session, *, pagination: Pagination, opportunity_type,
                        company_domain, date_from, date_to, annual_lists_only=False,
                        company_news_only=False, lifecycle_status=None,
-                       hide_archived=False, sort=None) -> Page[OpportunityOut]:
+                       hide_archived=False, sort=None, signal_category=None) -> Page[OpportunityOut]:
     rows, total = repo.list_opportunities(
         session, opportunity_type=opportunity_type, company_domain=company_domain,
         date_from=date_from, date_to=date_to, annual_lists_only=annual_lists_only,
         company_news_only=company_news_only, lifecycle_status=lifecycle_status,
-        hide_archived=hide_archived, sort=sort, limit=pagination.limit, offset=pagination.offset,
+        hide_archived=hide_archived, sort=sort, signal_category=signal_category,
+        limit=pagination.limit, offset=pagination.offset,
     )
     items = [OpportunityOut.model_validate(o) for o in rows]
     return Page.build(items, total, pagination.page, pagination.page_size)
@@ -202,6 +238,89 @@ def list_leadership_signals(session: Session, *, pagination: Pagination, company
     )
     items = [LeadershipSignalOut.model_validate(x) for x in rows]
     return Page.build(items, total, pagination.page, pagination.page_size)
+
+
+def delete_opportunity(session: Session, opportunity_id: str) -> None:
+    """Admin-only hard delete of an opportunity (the Blog Crawler / news entries)."""
+    if not repo.delete_opportunity(session, opportunity_id):
+        raise HTTPException(status_code=404, detail="opportunity not found")
+
+
+def delete_leadership_signal(session: Session, signal_id: str) -> None:
+    """Admin-only hard delete of a person-level leadership signal."""
+    if not repo.delete_leadership_signal(session, signal_id):
+        raise HTTPException(status_code=404, detail="leadership signal not found")
+
+
+# ---------------------------------------------- admin edit / delete (core records)
+# Enum-constrained editable fields, validated up-front for a clean 422 (the DB CHECK
+# would otherwise surface as an opaque 500). Every editable field lives on the entity's
+# `*Update` schema, so those schemas already gate WHICH fields an admin may change.
+_COMPANY_ENUM_FIELDS = {
+    "prospect_type": PROSPECT_TYPES, "company_tier": COMPANY_TIERS, "compliance_flag": COMPLIANCE_FLAGS,
+}
+_LEADERSHIP_ENUM_FIELDS = {
+    "movement_type": LEADERSHIP_MOVEMENT_TYPES, "seniority_band": LEADERSHIP_SENIORITY_BANDS,
+    "confidence": CONFIDENCE_LEVELS,
+}
+
+
+def _reject_bad_enums(patch: dict, enum_fields: dict) -> None:
+    for field, allowed in enum_fields.items():
+        value = patch.get(field)
+        if value is not None and value not in allowed:
+            raise HTTPException(status_code=422,
+                                detail=f"invalid {field}: {value!r} (allowed: {', '.join(allowed)})")
+
+
+def update_company(session: Session, domain: str, patch: dict) -> CompanySummary:
+    """Admin edit of a company. Recomputes name_key / canonical id when the name
+    changes so the platform join key stays consistent."""
+    _reject_bad_enums(patch, _COMPANY_ENUM_FIELDS)
+    new_name = patch.get("company_name")
+    if new_name:
+        from integration.normalizer import canonical_company_id, name_key
+        patch = {**patch, "name_key": name_key(new_name),
+                 "canonical_company_id": canonical_company_id(domain, new_name)}
+    company = repo.update_company(session, domain, patch)
+    if company is None:
+        raise HTTPException(status_code=404, detail="company not found")
+    return CompanySummary.model_validate(company)
+
+
+def delete_company(session: Session, domain: str) -> None:
+    """Admin hard delete of a company (cascades dependents; DMs are detached)."""
+    if not repo.delete_company(session, domain):
+        raise HTTPException(status_code=404, detail="company not found")
+
+
+def update_decision_maker(session: Session, dm_id: int, patch: dict) -> DecisionMakerOut:
+    dm = repo.update_decision_maker(session, dm_id, patch)
+    if dm is None:
+        raise HTTPException(status_code=404, detail="decision maker not found")
+    return _dm_outs_for_company(session, dm.company_domain, [dm])[0]
+
+
+def delete_decision_maker(session: Session, dm_id: int) -> None:
+    if not repo.delete_decision_maker(session, dm_id):
+        raise HTTPException(status_code=404, detail="decision maker not found")
+
+
+def update_opportunity(session: Session, opportunity_id: str, patch: dict) -> OpportunityOut:
+    """Admin edit of an opportunity. Changing opportunity_type re-derives signal_category
+    via the ORM listener automatically."""
+    opp = repo.update_opportunity(session, opportunity_id, patch)
+    if opp is None:
+        raise HTTPException(status_code=404, detail="opportunity not found")
+    return OpportunityOut.model_validate(opp)
+
+
+def update_leadership_signal(session: Session, signal_id: str, patch: dict) -> LeadershipSignalOut:
+    _reject_bad_enums(patch, _LEADERSHIP_ENUM_FIELDS)
+    sig = repo.update_leadership_signal(session, signal_id, patch)
+    if sig is None:
+        raise HTTPException(status_code=404, detail="leadership signal not found")
+    return LeadershipSignalOut.model_validate(sig)
 
 
 # ---------------------------------------------- decision-maker intelligence (Phase 2)
@@ -499,6 +618,7 @@ def analytics_summary(session: Session) -> AnalyticsSummary:
         total_decision_makers=counts["decision_makers"],
         total_leads=counts["leads"],
         grade_distribution=grades,
+        signal_category_counts=repo.signal_category_counts(session),
         top_companies=top,
     )
 

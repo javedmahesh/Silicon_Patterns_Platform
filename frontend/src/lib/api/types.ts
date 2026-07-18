@@ -34,6 +34,11 @@ export interface Page<T> {
 
 // ------------------------------------------------- entities (derived 1:1)
 export type CompanySummary = Concrete<Schemas["CompanySummary"]>;
+export type CompanyCreate = Schemas["CompanyCreate"];
+export type CompanyUpdate = Schemas["CompanyUpdate"];
+export type DecisionMakerUpdate = Schemas["DecisionMakerUpdate"];
+export type OpportunityUpdate = Schemas["OpportunityUpdate"];
+export type LeadershipSignalUpdate = Schemas["LeadershipSignalUpdate"];
 export type CompanyOut = Concrete<Schemas["CompanyOut"]>;
 export type OpportunityOut = Concrete<Schemas["OpportunityOut"]>;
 export type OpportunityDetailOut = Concrete<Schemas["OpportunityDetailOut"]>;
@@ -65,6 +70,10 @@ export type LeadershipSignalOut = Concrete<Schemas["LeadershipSignalOut"]>;
 export type EngagementOut = Concrete<Schemas["EngagementOut"]>;
 export type DecisionMakerCompany = Concrete<Schemas["DecisionMakerCompany"]>;
 export type DecisionMakerCompanies = Concrete<Schemas["DecisionMakerCompanies"]>;
+export type DmIntelligenceJobOut = Concrete<Schemas["DmIntelligenceJobOut"]>;
+export type DmIntelligenceJobItemOut = Concrete<Schemas["DmIntelligenceJobItemOut"]>;
+export type DmIntelligenceRunIn = Schemas["DmIntelligenceRunIn"];
+export type DmIntelligenceRunItemIn = Schemas["DmIntelligenceRunItemIn"];
 export type LeadOut = Concrete<Schemas["LeadOut"]>;
 export type LeadReviewOut = Concrete<Schemas["LeadReviewOut"]>;
 export type LeadReviewIn = Schemas["LeadReviewIn"];
@@ -300,69 +309,6 @@ export const SEQUENCE_STEP_ACTIONS = [
 ] as const;
 export const SEQUENCE_ENROLLMENT_STATUSES = ["active", "paused", "completed", "cancelled", "failed"] as const;
 
-// ----------------------------------------------------------------- deals & pipelines (Enterprise CRM Phase 2)
-export type PipelineOut = Concrete<Schemas["PipelineOut"]>;
-export type PipelineCreate = Schemas["PipelineCreate"];
-export type PipelinePatch = Schemas["PipelinePatch"];
-export type PipelineStageOut = Concrete<Schemas["PipelineStageOut"]>;
-export type PipelineStageCreate = Schemas["PipelineStageCreate"];
-export type PipelineStagePatch = Schemas["PipelineStagePatch"];
-export type DealOut = Concrete<Schemas["DealOut"]>;
-export type DealCreate = Schemas["DealCreate"];
-export type DealPatch = Schemas["DealPatch"];
-export type DealStageHistoryOut = Concrete<Schemas["DealStageHistoryOut"]>;
-export type KanbanOut = Concrete<Schemas["KanbanOut"]>;
-export type KanbanColumnOut = Concrete<Schemas["KanbanColumnOut"]>;
-export type ForecastOut = Concrete<Schemas["ForecastOut"]>;
-export type DealAnalyticsOut = Concrete<Schemas["DealAnalyticsOut"]>;
-export type DealDashboardOut = Concrete<Schemas["DealDashboardOut"]>;
-export type DealIntelligenceOut = Concrete<Schemas["DealIntelligenceOut"]>;
-
-export const DEAL_PIPELINE_STAGE_TYPES = ["open", "won", "lost"] as const;
-export const DEAL_FORECAST_CATEGORIES = ["pipeline", "best_case", "commit", "won", "omitted"] as const;
-export const DEAL_CURRENCIES = ["USD", "EUR", "GBP", "INR", "JPY", "CAD", "AUD", "SGD"] as const;
-
-// ----------------------------------------------------------------- customer success (Enterprise CRM Phase 4)
-export type CsAccountOut = Concrete<Schemas["CsAccountOut"]>;
-export type CsAccountCreate = Schemas["CsAccountCreate"];
-export type CsAccountPatch = Schemas["CsAccountPatch"];
-export type CsContactOut = Concrete<Schemas["CsContactOut"]>;
-export type CsContactCreate = Schemas["CsContactCreate"];
-export type CsContactPatch = Schemas["CsContactPatch"];
-export type CsHealthScoreOut = Concrete<Schemas["CsHealthScoreOut"]>;
-export type CsHealthScoreCreate = Schemas["CsHealthScoreCreate"];
-export type CsLifecycleEventOut = Concrete<Schemas["CsLifecycleEventOut"]>;
-export type CsContractOut = Concrete<Schemas["CsContractOut"]>;
-export type CsContractCreate = Schemas["CsContractCreate"];
-export type CsContractPatch = Schemas["CsContractPatch"];
-export type CsSuccessPlanOut = Concrete<Schemas["CsSuccessPlanOut"]>;
-export type CsSuccessPlanCreate = Schemas["CsSuccessPlanCreate"];
-export type CsSuccessPlanPatch = Schemas["CsSuccessPlanPatch"];
-export type CsMilestoneOut = Concrete<Schemas["CsMilestoneOut"]>;
-export type CsMilestoneCreate = Schemas["CsMilestoneCreate"];
-export type CsMilestonePatch = Schemas["CsMilestonePatch"];
-export type CsRiskOut = Concrete<Schemas["CsRiskOut"]>;
-export type CsRiskCreate = Schemas["CsRiskCreate"];
-export type CsRiskPatch = Schemas["CsRiskPatch"];
-export type CsTimelineEvent = Concrete<Schemas["CsTimelineEvent"]>;
-export type CsDashboardOut = Concrete<Schemas["CsDashboardOut"]>;
-export type CsAnalyticsOut = Concrete<Schemas["CsAnalyticsOut"]>;
-
-export const CS_ACCOUNT_STATUSES = ["prospect", "active", "at_risk", "churned", "inactive"] as const;
-export const CS_ACCOUNT_TIERS = ["strategic", "enterprise", "mid_market", "smb", "startup"] as const;
-export const CS_CONTACT_ROLES = [
-  "primary", "executive_sponsor", "technical", "procurement", "finance", "champion",
-] as const;
-export const CS_LIFECYCLE_STAGES = [
-  "prospect", "customer", "onboarding", "adoption", "growth", "renewal", "expansion", "at_risk", "churned",
-] as const;
-export const CS_CONTRACT_STATUSES = [
-  "draft", "active", "expired", "renewed", "terminated", "pending_renewal",
-] as const;
-export const CS_PLAN_STATUSES = ["draft", "active", "completed", "cancelled"] as const;
-export const CS_MILESTONE_STATUSES = ["pending", "in_progress", "completed", "at_risk", "missed"] as const;
-export const CS_RISK_SEVERITIES = ["low", "medium", "high", "critical"] as const;
-export const CS_RISK_STATUSES = ["open", "mitigated", "accepted", "closed"] as const;
 
 // ------------------------------------------------------- hand-shaped types
 /** The explainable scoring trace (lead_scoring/scorer.py -> `rationale` dict). All
@@ -461,4 +407,8 @@ export interface CompanyProfile {
 export type ExecutionStageOut = Concrete<Schemas["ExecutionStageOut"]>;
 export type ExecutionOut = Concrete<Schemas["ExecutionOut"]>;
 export type SchedulerStatusOut = Concrete<Schemas["SchedulerStatusOut"]>;
+export type SchedulerConfigIn = Schemas["SchedulerConfigIn"];
 export type RunNowResult = Concrete<Schemas["RunNowResult"]>;
+export type RunEngineRecordsOut = Concrete<Schemas["RunEngineRecordsOut"]>;
+export type RunEngineRecordOut = Concrete<Schemas["RunEngineRecordOut"]>;
+export type RunRecordField = Concrete<Schemas["RunRecordField"]>;

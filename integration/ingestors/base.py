@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from integration.ingestors.readers import read_rows
 from integration.resolver import CompanyResolver, Resolution
 from master_db.models import IngestionRun
+from orchestrator import provenance
 
 logger = logging.getLogger(__name__)
 
@@ -207,12 +208,30 @@ class BaseIngestor:
 
         rowdicts = list(collected.values())
         if rowdicts:
+            self._record_bulk_provenance(rowdicts)   # before the write, to classify created vs updated
             bulk_upsert(self.session, self.bulk_model, rowdicts, list(self.bulk_conflict))
             self.session.flush()
         after = self.session.scalar(select(func.count()).select_from(self.bulk_model)) or 0
         created = max(0, after - before)
         result.rows_upserted = len(rowdicts)
         result.rows_duplicate = max(0, len(rowdicts) - created)
+
+    def _record_bulk_provenance(self, rowdicts: list[dict[str, Any]]) -> None:
+        """Emit per-run provenance for a bulk upsert. A single bulk statement can't
+        report insert-vs-update per row, so we pre-fetch which conflict keys already
+        exist and classify each. Single-column conflicts only (every bulk ingestor
+        today keys on one column, e.g. job_id); a hypothetical composite key is left
+        unrecorded rather than mis-attributed.
+        ponytail: single-key only — widen if a composite-key bulk ingestor appears."""
+        if self.session.info.get("run_provenance") is None or len(self.bulk_conflict) != 1:
+            return
+        col_name = self.bulk_conflict[0]
+        col = getattr(self.bulk_model, col_name)
+        keys = [r[col_name] for r in rowdicts]
+        existing = set(self.session.scalars(select(col).where(col.in_(keys))))
+        table = self.bulk_model.__tablename__
+        for key in keys:
+            provenance.record(self.session, table, key, "updated" if key in existing else "created")
 
     def _fail(self, result: IngestionResult, msg: str) -> IngestionResult:
         run = IngestionRun(
@@ -269,6 +288,7 @@ class BaseIngestor:
     def upsert(self, model: type, pk_value: Any, values: dict[str, Any]):
         """Insert or update *model* by primary-key value. Idempotent."""
         obj = self.session.get(model, pk_value)
+        op = "updated" if obj is not None else "created"
         if obj is None:
             obj = model(**values)
             self.session.add(obj)
@@ -276,6 +296,7 @@ class BaseIngestor:
             for key, value in values.items():
                 setattr(obj, key, value)
         self.session.flush()
+        provenance.record(self.session, model.__tablename__, pk_value, op)
         return obj
 
     def upsert_by(self, model: type, column, value: Any, values: dict[str, Any]) -> tuple[Any, bool]:
@@ -293,6 +314,7 @@ class BaseIngestor:
             for key, val in values.items():
                 setattr(obj, key, val)
         self.session.flush()
+        provenance.record(self.session, model.__tablename__, value, "updated" if existed else "created")
         return obj, existed
 
     # --- value coercion (CSV gives strings; JSON gives native types) ---

@@ -31,6 +31,7 @@ from integration.news.extraction import (
     extract_primary_company,
 )
 from integration.resolver import CompanyResolver
+from orchestrator import provenance
 from master_db.models import (
     IngestionRun,
     NewsArticle,
@@ -202,6 +203,8 @@ class NewsIntelligenceEngine:
                 m.opportunities_updated += 1
                 if not existing.related_group_id:
                     existing.related_group_id = group_id
+                provenance.record(self.session, "opportunities", existing.opportunity_id, "updated",
+                                  {"opportunity_type": sig.opportunity_type, "article_title": title})
             else:
                 group_id = group_id or _group_id(res.company_domain, fp)
                 opp = self._create_opportunity(res, name, sig, fp, canon, title, published,
@@ -209,6 +212,8 @@ class NewsIntelligenceEngine:
                 self._attach_source(opp, article, canon, na)
                 m.sources_attached += 1
                 m.opportunities_created += 1
+                provenance.record(self.session, "opportunities", opp.opportunity_id, "created",
+                                  {"opportunity_type": sig.opportunity_type, "article_title": title})
         self.session.flush()
 
     # ------------------------------------------------------------- helpers

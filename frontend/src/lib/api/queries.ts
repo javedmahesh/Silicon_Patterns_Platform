@@ -4,16 +4,12 @@ import {
   api,
   type CampaignListParams,
   type CompanyListParams,
-  type CsAccountListParams,
-  type CsContractListParams,
-  type DealListParams,
   type DecisionMakerListParams,
   type DemandListParams,
   type EnrollmentListParams,
   type LeadListParams,
   type LeadershipSignalListParams,
   type OpportunityListParams,
-  type PipelineListParams,
   type ReviewListParams,
   type SequenceListParams,
 } from "./endpoints";
@@ -42,6 +38,56 @@ export function useCompanies(p: CompanyListParams) {
     queryKey: qk.companies(p),
     queryFn: () => api.companies(p),
     placeholderData: keepPreviousData,
+  });
+}
+
+/** Manually add a company to the universe (manager+); refreshes the companies list. */
+export function useCreateCompany() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("./types").CompanyCreate) => api.createCompany(body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["companies"] }),
+  });
+}
+
+export function useUpdateCompany() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { domain: string; body: import("./types").CompanyUpdate }) =>
+      api.updateCompany(v.domain, v.body),
+    onSuccess: (_r, v) => {
+      qc.invalidateQueries({ queryKey: ["companies"] });
+      qc.invalidateQueries({ queryKey: ["company", v.domain] });
+    },
+  });
+}
+
+export function useDeleteCompany() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (domain: string) => api.deleteCompany(domain),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["companies"] });
+      qc.invalidateQueries({ queryKey: ["decision-makers"] });
+      qc.invalidateQueries({ queryKey: ["analytics"] });
+    },
+  });
+}
+
+export function useUpdateDecisionMaker() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: number; body: import("./types").DecisionMakerUpdate }) =>
+      api.updateDecisionMaker(v.id, v.body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["decision-makers"] }),
+  });
+}
+
+export function useDeleteDecisionMaker() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => api.deleteDecisionMaker(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["decision-makers"] }),
   });
 }
 
@@ -130,6 +176,48 @@ export function useOpportunityReview() {
   return { review, setLifecycle };
 }
 
+/** Admin-only hard delete of an opportunity (Blog Crawler / news entry). */
+export function useDeleteOpportunity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteOpportunity(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["opportunities"] });
+      qc.invalidateQueries({ queryKey: ["analytics"] });
+    },
+  });
+}
+
+export function useUpdateOpportunity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; body: import("./types").OpportunityUpdate }) =>
+      api.updateOpportunity(v.id, v.body),
+    onSuccess: (_r, v) => {
+      qc.invalidateQueries({ queryKey: ["opportunities"] });
+      qc.invalidateQueries({ queryKey: ["opportunity", v.id] });
+    },
+  });
+}
+
+/** Admin-only hard delete of a person-level leadership signal. */
+export function useDeleteLeadershipSignal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteLeadershipSignal(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["leadership-signals"] }),
+  });
+}
+
+export function useUpdateLeadershipSignal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; body: import("./types").LeadershipSignalUpdate }) =>
+      api.updateLeadershipSignal(v.id, v.body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["leadership-signals"] }),
+  });
+}
+
 export function useDemandSignals(p: DemandListParams) {
   return useQuery({
     queryKey: qk.demandSignals(p),
@@ -161,6 +249,31 @@ export function useDecisionMakerCompanies() {
     queryKey: qk.decisionMakerCompanies,
     queryFn: api.decisionMakerCompanies,
     placeholderData: keepPreviousData,
+  });
+}
+
+/** Statuses at which a DM intelligence job is finished (polling can stop). */
+const DM_JOB_TERMINAL = ["completed", "partial", "failed"];
+
+/** Kick off a manual Decision Maker Intelligence run (manager+). */
+export function useRunDmIntelligence() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("./types").DmIntelligenceRunIn) => api.runDmIntelligence(body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.dmIntelligenceRuns }),
+  });
+}
+
+/** Poll one DM intelligence job for live per-company progress; stops once terminal. */
+export function useDmIntelligenceRun(id: number | undefined) {
+  return useQuery({
+    queryKey: qk.dmIntelligenceRun(id ?? -1),
+    queryFn: () => api.dmIntelligenceRun(id as number),
+    enabled: Boolean(id),
+    refetchInterval: (q) => {
+      const status = q.state.data?.status;
+      return status && DM_JOB_TERMINAL.includes(status) ? false : 2000;
+    },
   });
 }
 
@@ -865,344 +978,6 @@ export function useEnrollmentMutations() {
   return { pause, resume, cancel, advance, skipStep };
 }
 
-// --------------------------------------- Enterprise CRM Phase 2: pipelines & deals
-export function usePipelines(p: PipelineListParams = {}) {
-  return useQuery({
-    queryKey: qk.pipelines(p),
-    queryFn: () => api.pipelines.list(p),
-    placeholderData: keepPreviousData,
-  });
-}
-
-export function usePipeline(id: number | undefined) {
-  return useQuery({
-    queryKey: qk.pipeline(id ?? -1),
-    queryFn: () => api.pipelines.get(id as number),
-    enabled: Boolean(id),
-  });
-}
-
-export function useDealDashboard(pipelineId?: number) {
-  return useQuery({ queryKey: qk.dealDashboard(pipelineId), queryFn: () => api.pipelines.dashboard(pipelineId) });
-}
-
-export function useKanban(pipelineId: number | undefined, p: { stage_id?: number; owner_id?: number; search?: string } = {}) {
-  return useQuery({
-    queryKey: qk.pipelineKanban(pipelineId ?? -1, p),
-    queryFn: () => api.pipelines.kanban(pipelineId as number, p),
-    enabled: Boolean(pipelineId),
-    placeholderData: keepPreviousData,
-  });
-}
-
-export function useForecast(pipelineId: number | undefined) {
-  return useQuery({
-    queryKey: qk.pipelineForecast(pipelineId ?? -1),
-    queryFn: () => api.pipelines.forecast(pipelineId as number),
-    enabled: Boolean(pipelineId),
-  });
-}
-
-export function usePipelineAnalytics(pipelineId: number | undefined) {
-  return useQuery({
-    queryKey: qk.pipelineAnalytics(pipelineId ?? -1),
-    queryFn: () => api.pipelines.analytics(pipelineId as number),
-    enabled: Boolean(pipelineId),
-  });
-}
-
-export function useDeals(p: DealListParams = {}) {
-  return useQuery({
-    queryKey: qk.deals(p),
-    queryFn: () => api.deals.list(p),
-    placeholderData: keepPreviousData,
-  });
-}
-
-export function useDeal(id: number | undefined) {
-  return useQuery({
-    queryKey: qk.deal(id ?? -1),
-    queryFn: () => api.deals.get(id as number),
-    enabled: Boolean(id),
-  });
-}
-
-export function useDealHistory(id: number | undefined) {
-  return useQuery({
-    queryKey: qk.dealHistory(id ?? -1),
-    queryFn: () => api.deals.history(id as number),
-    enabled: Boolean(id),
-  });
-}
-
-export function useDealTimeline(id: number | undefined) {
-  return useQuery({
-    queryKey: qk.dealTimeline(id ?? -1),
-    queryFn: () => api.deals.timeline(id as number),
-    enabled: Boolean(id),
-  });
-}
-
-export function useDealIntelligence(id: number | undefined, enabled = true) {
-  return useQuery({
-    queryKey: qk.dealIntelligence(id ?? -1),
-    queryFn: () => api.deals.intelligence(id as number),
-    enabled: enabled && Boolean(id),
-    retry: 0,
-  });
-}
-
-/** Every deal/pipeline view is cross-linked (a stage edit changes Kanban column
- *  names, a move changes deal + history + analytics) — invalidate both families
- *  together rather than tracking each edge. */
-function useInvalidateDealData() {
-  const qc = useQueryClient();
-  return () => {
-    qc.invalidateQueries({ queryKey: ["pipelines"] });
-    qc.invalidateQueries({ queryKey: ["deals"] });
-  };
-}
-
-export function usePipelineMutations() {
-  const invalidate = useInvalidateDealData();
-  const create = useMutation({
-    mutationFn: (body: import("./types").PipelineCreate) => api.pipelines.create(body),
-    onSuccess: invalidate,
-  });
-  const patch = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: import("./types").PipelinePatch }) => api.pipelines.patch(id, body),
-    onSuccess: invalidate,
-  });
-  const remove = useMutation({ mutationFn: (id: number) => api.pipelines.delete(id), onSuccess: invalidate });
-  const addStage = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: import("./types").PipelineStageCreate }) => api.pipelines.addStage(id, body),
-    onSuccess: invalidate,
-  });
-  const patchStage = useMutation({
-    mutationFn: ({ id, stageId, body }: { id: number; stageId: number; body: import("./types").PipelineStagePatch }) =>
-      api.pipelines.patchStage(id, stageId, body),
-    onSuccess: invalidate,
-  });
-  const deleteStage = useMutation({
-    mutationFn: ({ id, stageId }: { id: number; stageId: number }) => api.pipelines.deleteStage(id, stageId),
-    onSuccess: invalidate,
-  });
-  return { create, patch, remove, addStage, patchStage, deleteStage };
-}
-
-export function useDealMutations() {
-  const invalidate = useInvalidateDealData();
-  const create = useMutation({
-    mutationFn: (body: import("./types").DealCreate) => api.deals.create(body),
-    onSuccess: invalidate,
-  });
-  const patch = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: import("./types").DealPatch }) => api.deals.patch(id, body),
-    onSuccess: invalidate,
-  });
-  const remove = useMutation({ mutationFn: (id: number) => api.deals.delete(id), onSuccess: invalidate });
-  const move = useMutation({
-    mutationFn: ({ id, stageId }: { id: number; stageId: number }) => api.deals.move(id, stageId),
-    onSuccess: invalidate,
-  });
-  return { create, patch, remove, move };
-}
-
-// --------------------------------------- Enterprise CRM Phase 4: customer success
-export function useCsAccounts(p: CsAccountListParams = {}) {
-  return useQuery({
-    queryKey: qk.csAccounts(p),
-    queryFn: () => api.cs.accounts(p),
-    placeholderData: keepPreviousData,
-  });
-}
-
-export function useCsAccount(id: number | undefined) {
-  return useQuery({
-    queryKey: qk.csAccount(id ?? -1),
-    queryFn: () => api.cs.account(id as number),
-    enabled: Boolean(id),
-  });
-}
-
-export function useCsContacts(accountId: number | undefined) {
-  return useQuery({
-    queryKey: qk.csContacts(accountId ?? -1),
-    queryFn: () => api.cs.contacts(accountId as number),
-    enabled: Boolean(accountId),
-  });
-}
-
-export function useCsHealth(accountId: number | undefined) {
-  return useQuery({
-    queryKey: qk.csHealth(accountId ?? -1),
-    queryFn: () => api.cs.health(accountId as number),
-    enabled: Boolean(accountId),
-    retry: 0,
-  });
-}
-
-export function useCsHealthHistory(accountId: number | undefined) {
-  return useQuery({
-    queryKey: qk.csHealthHistory(accountId ?? -1),
-    queryFn: () => api.cs.healthHistory(accountId as number),
-    enabled: Boolean(accountId),
-  });
-}
-
-export function useCsLifecycle(accountId: number | undefined) {
-  return useQuery({
-    queryKey: qk.csLifecycle(accountId ?? -1),
-    queryFn: () => api.cs.lifecycle(accountId as number),
-    enabled: Boolean(accountId),
-  });
-}
-
-export function useCsContracts(p: CsContractListParams = {}) {
-  return useQuery({
-    queryKey: qk.csContracts(p),
-    queryFn: () => api.cs.contracts(p),
-    placeholderData: keepPreviousData,
-  });
-}
-
-export function useCsPlans(accountId: number | undefined) {
-  return useQuery({
-    queryKey: qk.csPlans(accountId ?? -1),
-    queryFn: () => api.cs.plans(accountId as number),
-    enabled: Boolean(accountId),
-  });
-}
-
-export function useCsMilestones(planId: number | undefined) {
-  return useQuery({
-    queryKey: qk.csMilestones(planId ?? -1),
-    queryFn: () => api.cs.milestones(planId as number),
-    enabled: Boolean(planId),
-  });
-}
-
-export function useCsRisks(accountId: number | undefined, status?: string) {
-  return useQuery({
-    queryKey: qk.csRisks(accountId ?? -1, status),
-    queryFn: () => api.cs.risks(accountId as number, status),
-    enabled: Boolean(accountId),
-  });
-}
-
-export function useCsTimeline(accountId: number | undefined) {
-  return useQuery({
-    queryKey: qk.csTimeline(accountId ?? -1),
-    queryFn: () => api.cs.timeline(accountId as number),
-    enabled: Boolean(accountId),
-  });
-}
-
-export function useCsDashboard() {
-  return useQuery({ queryKey: qk.csDashboard, queryFn: api.cs.dashboard });
-}
-
-export function useCsAnalytics() {
-  return useQuery({ queryKey: qk.csAnalytics, queryFn: api.cs.analytics });
-}
-
-/** Every CS view is account-scoped and cross-linked (a new health score changes
- *  the account summary + dashboard averages; a risk changes the timeline) —
- *  invalidate the whole "cs" family rather than tracking each edge. */
-function useInvalidateCsData() {
-  const qc = useQueryClient();
-  return () => qc.invalidateQueries({ queryKey: ["cs"] });
-}
-
-export function useCsAccountMutations() {
-  const invalidate = useInvalidateCsData();
-  const create = useMutation({
-    mutationFn: (body: import("./types").CsAccountCreate) => api.cs.createAccount(body),
-    onSuccess: invalidate,
-  });
-  const patch = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: import("./types").CsAccountPatch }) => api.cs.patchAccount(id, body),
-    onSuccess: invalidate,
-  });
-  const remove = useMutation({ mutationFn: (id: number) => api.cs.deleteAccount(id), onSuccess: invalidate });
-  const scoreHealth = useMutation({
-    mutationFn: ({ accountId, body }: { accountId: number; body: import("./types").CsHealthScoreCreate }) =>
-      api.cs.scoreAccount(accountId, body),
-    onSuccess: invalidate,
-  });
-  return { create, patch, remove, scoreHealth };
-}
-
-export function useCsContactMutations() {
-  const invalidate = useInvalidateCsData();
-  const create = useMutation({
-    mutationFn: (body: import("./types").CsContactCreate) => api.cs.createContact(body),
-    onSuccess: invalidate,
-  });
-  const patch = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: import("./types").CsContactPatch }) => api.cs.patchContact(id, body),
-    onSuccess: invalidate,
-  });
-  const remove = useMutation({ mutationFn: (id: number) => api.cs.deleteContact(id), onSuccess: invalidate });
-  return { create, patch, remove };
-}
-
-export function useCsContractMutations() {
-  const invalidate = useInvalidateCsData();
-  const create = useMutation({
-    mutationFn: (body: import("./types").CsContractCreate) => api.cs.createContract(body),
-    onSuccess: invalidate,
-  });
-  const patch = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: import("./types").CsContractPatch }) => api.cs.patchContract(id, body),
-    onSuccess: invalidate,
-  });
-  const remove = useMutation({ mutationFn: (id: number) => api.cs.deleteContract(id), onSuccess: invalidate });
-  return { create, patch, remove };
-}
-
-export function useCsPlanMutations() {
-  const invalidate = useInvalidateCsData();
-  const create = useMutation({
-    mutationFn: (body: import("./types").CsSuccessPlanCreate) => api.cs.createPlan(body),
-    onSuccess: invalidate,
-  });
-  const patch = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: import("./types").CsSuccessPlanPatch }) => api.cs.patchPlan(id, body),
-    onSuccess: invalidate,
-  });
-  const remove = useMutation({ mutationFn: (id: number) => api.cs.deletePlan(id), onSuccess: invalidate });
-  return { create, patch, remove };
-}
-
-export function useCsMilestoneMutations() {
-  const invalidate = useInvalidateCsData();
-  const create = useMutation({
-    mutationFn: (body: import("./types").CsMilestoneCreate) => api.cs.createMilestone(body),
-    onSuccess: invalidate,
-  });
-  const patch = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: import("./types").CsMilestonePatch }) => api.cs.patchMilestone(id, body),
-    onSuccess: invalidate,
-  });
-  const remove = useMutation({ mutationFn: (id: number) => api.cs.deleteMilestone(id), onSuccess: invalidate });
-  return { create, patch, remove };
-}
-
-export function useCsRiskMutations() {
-  const invalidate = useInvalidateCsData();
-  const create = useMutation({
-    mutationFn: (body: import("./types").CsRiskCreate) => api.cs.createRisk(body),
-    onSuccess: invalidate,
-  });
-  const patch = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: import("./types").CsRiskPatch }) => api.cs.patchRisk(id, body),
-    onSuccess: invalidate,
-  });
-  const remove = useMutation({ mutationFn: (id: number) => api.cs.deleteRisk(id), onSuccess: invalidate });
-  return { create, patch, remove };
-}
-
 // ------------------------------------------------------- scheduler / run history
 export function useSchedulerStatus() {
   return useQuery({
@@ -1229,3 +1004,117 @@ export function useRunNow() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["scheduler"] }),
   });
 }
+
+/** Drill-down: the records one engine touched during one run. Loaded on demand
+ * (only when a stage row is expanded), paginated, strictly scoped to that run. */
+export function useRunEngineRecords(
+  runId: string, engine: string, page: number, enabled: boolean,
+) {
+  return useQuery({
+    queryKey: qk.schedulerRunRecords(runId, engine, page),
+    queryFn: () => api.scheduler.runEngineRecords(runId, engine, { page, page_size: 25 }),
+    enabled,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Update the Standard Run schedule (times / enabled / grace) — manager+. */
+export function useUpdateSchedulerConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("./types").SchedulerConfigIn) => api.scheduler.updateConfig(body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["scheduler"] }),
+  });
+}
+
+// ---------------------------------------------------------------- Historical Import (Phase 6)
+import type {
+  AuditEventDTO,
+  BulkAction,
+  FieldChoice,
+  ImportJobDTO,
+  ReviewDecision,
+  ReviewResponseDTO,
+  ReviewStatsDTO,
+} from "./import-types";
+import { IMPORT_TERMINAL_STATES } from "./import-types";
+
+export function useImportJobs() {
+  return useQuery({
+    queryKey: qk.imports,
+    queryFn: () => api.imports.list(),
+    select: (d) => d.items,
+    refetchInterval: 15_000,
+  });
+}
+
+/** One import job; polls while running so live progress refreshes. */
+export function useImportJob(id: string | undefined) {
+  return useQuery({
+    queryKey: qk.import(id ?? ""),
+    queryFn: () => api.imports.get(id as string),
+    enabled: Boolean(id),
+    refetchInterval: (q) => {
+      const s = (q.state.data as ImportJobDTO | undefined)?.status;
+      return s && IMPORT_TERMINAL_STATES.includes(s) ? false : 2000;
+    },
+  });
+}
+
+export function useImportReview(id: string | undefined, filters: { category?: string; state?: string } = {}) {
+  return useQuery({
+    queryKey: qk.importReview(id ?? "", filters),
+    queryFn: () => api.imports.review(id as string, filters),
+    enabled: Boolean(id),
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useImportAudit(id: string | undefined) {
+  return useQuery({
+    queryKey: qk.importAudit(id ?? ""),
+    queryFn: () => api.imports.audit(id as string),
+    enabled: Boolean(id),
+    select: (d) => d.events,
+  });
+}
+
+/** Upload an Excel export (base64) → previewed ImportJob (admin). */
+export function useUploadImport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { filename: string; content_base64: string }) => api.imports.upload(body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.imports }),
+  });
+}
+
+/** All review + commit mutations for one import, refreshing only the affected queries. */
+export function useImportActions(id: string) {
+  const qc = useQueryClient();
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["imports", id] });
+    qc.invalidateQueries({ queryKey: qk.imports });
+  };
+  const decide = useMutation({
+    mutationFn: (b: { kind: string; source_ref: string; decision: ReviewDecision; reason?: string }) =>
+      api.imports.decide(id, b),
+    onSuccess: refresh,
+  });
+  const resolve = useMutation({
+    mutationFn: (b: { kind: string; source_ref: string; field: string; choice: FieldChoice; reason?: string }) =>
+      api.imports.resolve(id, b),
+    onSuccess: refresh,
+  });
+  const bulk = useMutation({
+    mutationFn: (b: { action: BulkAction; refs?: { kind: string; source_ref: string }[]; category?: string }) =>
+      api.imports.bulk(id, b),
+    onSuccess: refresh,
+  });
+  const commit = useMutation({
+    mutationFn: (dryRun: boolean) => api.imports.commit(id, dryRun),
+    onSuccess: refresh,
+  });
+  return { decide, resolve, bulk, commit };
+}
+
+export type { AuditEventDTO, ImportJobDTO, ReviewResponseDTO, ReviewStatsDTO };

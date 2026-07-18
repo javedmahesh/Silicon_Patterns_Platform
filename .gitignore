@@ -32,4 +32,18 @@ outreach/.vercel/
 .DS_Store
 Thumbs.db
 
-# NOTE: master_local.db is intentionally NOT ignored — it ships as dev seed data.
+# Local runtime databases / artifacts — NOT shipped. Production uses the Supabase
+# Postgres (DATABASE_URL); this local SQLite carries real company/decision-maker/user
+# data (PII) and must not be pushed to the deployment repo. A fresh clone auto-creates
+# an empty one; seed it locally with scripts/seed_master_db.py if needed.
+master_local.db
+master_local.db-wal
+master_local.db-shm
+*.db.bak
+*.sqlite
+*.sqlite3
+
+# Test / tooling output
+test_output.txt
+full_test_output.txt
+*_output.txt

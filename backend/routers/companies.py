@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, status
 from sqlalchemy.orm import Session
 
 from backend import services
 from backend.dependencies import Pagination, get_session, pagination, sort_order
 from backend.repositories import COMPANY_SORT_FIELDS
-from backend.schemas import CompanyProfile, CompanySummary, Page
+from backend.schemas import CompanyCreate, CompanyProfile, CompanySummary, CompanyUpdate, Page
+from backend.security import require_admin, require_manager
+from master_db.models import User
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
@@ -31,9 +33,40 @@ def list_companies(
     )
 
 
+@router.post("", response_model=CompanySummary, status_code=201,
+             summary="Manually add a company to the universe (manager+)")
+def create_company(
+    body: CompanyCreate,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_manager),
+):
+    return services.create_company(session, payload=body, actor=actor)
+
+
 @router.get("/{domain}", response_model=CompanyProfile, summary="Unified company profile")
 def company_profile(
     domain: str = Path(..., description="company_domain, e.g. tenstorrent.com"),
     session: Session = Depends(get_session),
 ):
     return services.get_company_profile(session, domain)
+
+
+@router.patch("/{domain}", response_model=CompanySummary,
+              summary="Edit a company's descriptive fields (admin only)")
+def update_company(
+    body: CompanyUpdate,
+    domain: str = Path(..., description="company_domain"),
+    session: Session = Depends(get_session),
+    _: User = Depends(require_admin),
+):
+    return services.update_company(session, domain, body.model_dump(exclude_unset=True))
+
+
+@router.delete("/{domain}", status_code=status.HTTP_204_NO_CONTENT,
+               summary="Permanently delete a company + its dependent data (admin only)")
+def delete_company(
+    domain: str = Path(..., description="company_domain"),
+    session: Session = Depends(get_session),
+    _: User = Depends(require_admin),
+):
+    services.delete_company(session, domain)

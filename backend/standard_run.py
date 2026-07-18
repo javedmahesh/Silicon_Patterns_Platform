@@ -40,11 +40,13 @@ logger = logging.getLogger("backend.standard_run")
 
 # The Standard Run IS the full `run all` pipeline (orchestrator.PIPELINE_ORDER), so
 # manual (`run all`) and scheduled runs execute the identical pipeline. That order
-# runs the 7 core engines the spec names — industry, blog, career,
-# decision_maker_intelligence, scoring, leadership, engagement — plus the optional
-# annual_list / company_news file-feed ingestors, which no-op when no feed is
-# present. `None` here means "the full PIPELINE_ORDER" (run_pipeline's own default),
-# keeping the component list in one place; override per-call only for tests.
+# runs the core engines — industry, blog, news, career, scoring, leadership,
+# engagement — plus the optional annual_list / company_news file-feed ingestors,
+# which no-op when no feed is present. decision_maker_intelligence is deliberately
+# NOT part of this pipeline: it is a paid Apify actor, run manually per-company from
+# the Decision Makers page (see backend/dm_intelligence_jobs.py). `None` here means
+# "the full PIPELINE_ORDER" (run_pipeline's own default), keeping the component list
+# in one place; override per-call only for tests.
 STANDARD_RUN_COMPONENTS: list[str] | None = None
 
 # Fixed advisory-lock key (arbitrary constant, unique to the Standard Run). Cross-

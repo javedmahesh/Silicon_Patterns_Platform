@@ -1,14 +1,39 @@
-import { Download, ExternalLink } from "lucide-react";
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Download, ExternalLink, Pencil, Trash2 } from "lucide-react";
 
 import { GradeBadge } from "@/components/data/GradeBadge";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { EditRecordModal, type EditField } from "@/components/ui/EditRecordModal";
 import { toast } from "@/components/ui/Toast";
 import { FollowUpButton, PinButton, WatchButton } from "@/components/workspace/WorkspaceButtons";
+import { apiErrorMessage } from "@/lib/api/client";
+import { useAuth } from "@/lib/auth/store";
+import { useDeleteCompany, useUpdateCompany } from "@/lib/api/queries";
+import { COMPANY_TIERS, COMPLIANCE_FLAGS, PROSPECT_TYPES } from "@/lib/enums";
 import { domainHref, enumLabel, fmtInt, fmtScore, monogram } from "@/lib/format";
 import type { CompanyProfile } from "@/lib/api/types";
 
 type Tone = "positive" | "warning" | "danger" | "neutral";
+
+const COMPANY_FIELDS: EditField[] = [
+  { name: "company_name", label: "Company name" },
+  { name: "website", label: "Website" },
+  { name: "country", label: "Country" },
+  { name: "city", label: "City" },
+  { name: "headquarters", label: "Headquarters" },
+  { name: "industry_category", label: "Industry" },
+  { name: "sub_category", label: "Sub-category" },
+  { name: "technology_focus", label: "Technology focus" },
+  { name: "company_type", label: "Company type" },
+  { name: "founded_year", label: "Founded year" },
+  { name: "company_tier", label: "Tier", kind: "select", options: COMPANY_TIERS },
+  { name: "prospect_type", label: "Prospect type", kind: "select", options: PROSPECT_TYPES },
+  { name: "compliance_flag", label: "Compliance", kind: "select", options: COMPLIANCE_FLAGS },
+  { name: "company_linkedin", label: "Company LinkedIn", full: true },
+  { name: "description", label: "Description", kind: "textarea" },
+];
 
 function complianceTone(flag: string): Tone {
   const f = flag.toUpperCase();
@@ -22,6 +47,28 @@ export function ProfileHeader({ profile }: { profile: CompanyProfile }) {
   const { company, lead_score } = profile;
   const domain = company.company_domain;
   const href = domainHref(company.website || domain);
+  const { isAdmin } = useAuth();
+  const navigate = useNavigate();
+  const [editing, setEditing] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const update = useUpdateCompany();
+  const del = useDeleteCompany();
+
+  const saveEdit = (patch: Record<string, string>) => {
+    if (Object.keys(patch).length === 0) return setEditing(false);
+    update.mutate(
+      { domain, body: patch },
+      {
+        onSuccess: () => { setEditing(false); toast("Company updated", "positive"); },
+        onError: (e) => toast(apiErrorMessage(e), "danger"),
+      },
+    );
+  };
+  const doDelete = () =>
+    del.mutate(domain, {
+      onSuccess: () => { toast("Company deleted", "positive"); navigate("/companies"); },
+      onError: (e) => { setConfirmDel(false); toast(apiErrorMessage(e), "danger"); },
+    });
 
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(profile, null, 2)], { type: "application/json" });
@@ -106,7 +153,42 @@ export function ProfileHeader({ profile }: { profile: CompanyProfile }) {
           <Download size={14} />
           Export
         </Button>
+        {isAdmin && (
+          <>
+            <Button variant="ghost" onClick={() => setEditing(true)}>
+              <Pencil size={14} /> Edit
+            </Button>
+            {confirmDel ? (
+              <span className="inline-flex items-center gap-1.5 text-12">
+                <span className="text-fg-subtle">Delete company + all its data?</span>
+                <button type="button" onClick={doDelete} disabled={del.isPending}
+                        className="text-danger hover:underline">Confirm</button>
+                <button type="button" onClick={() => setConfirmDel(false)}
+                        className="text-fg-subtle hover:underline">Cancel</button>
+              </span>
+            ) : (
+              <Button variant="ghost" onClick={() => setConfirmDel(true)}
+                      className="text-danger hover:text-danger">
+                <Trash2 size={14} /> Delete
+              </Button>
+            )}
+          </>
+        )}
       </div>
+
+      {editing && (
+        <EditRecordModal
+          open
+          onClose={() => setEditing(false)}
+          title={`Edit ${company.company_name || domain}`}
+          icon={<Pencil size={15} />}
+          fields={COMPANY_FIELDS}
+          initial={company as unknown as Record<string, unknown>}
+          pending={update.isPending}
+          error={update.isError ? update.error : undefined}
+          onSubmit={saveEdit}
+        />
+      )}
     </div>
   );
 }

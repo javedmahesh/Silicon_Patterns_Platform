@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.orm import Session
 
+from config.enums import LEADERSHIP_OPPORTUNITY_TYPES
+
 from master_db.models import (
     Company,
     CompanyNote,
@@ -83,6 +85,23 @@ def list_companies(
 
 def get_company(session: Session, domain: str) -> Company | None:
     return session.get(Company, domain)
+
+
+def create_company(session: Session, *, company_domain: str, company_name: str, name_key: str,
+                   canonical_company_id: str, country: str = "", website: str = "",
+                   industry_category: str = "") -> Company:
+    """Insert a manually-added company. The caller (services.create_company) has
+    already normalized the domain + derived name_key / canonical id and checked for
+    an existing row. Marked source='manual', VALID, not a stub."""
+    company = Company(
+        company_domain=company_domain, company_name=company_name, name_key=name_key,
+        canonical_company_id=canonical_company_id, country=country, website=website,
+        industry_category=industry_category, validation_status="VALID", is_stub=False,
+        source="manual", source_type="manual",
+    )
+    session.add(company)
+    session.commit()
+    return company
 
 
 # -------------------------------------------------- single-company bundles
@@ -185,12 +204,17 @@ def list_leads(session: Session, *, grade=None, tier=None, prospect_type=None,
 
 # ----------------------------------------------------------- opportunities
 _COMPANY_NEWS_TYPES = ("EXECUTIVE_HIRE", "LEADERSHIP_CHANGE", "ROLE_CHANGE", "COMPANY_NEWS")
+# The opportunity_types that make up the first-class LEADERSHIP signal category.
+_LEADERSHIP_TYPES = LEADERSHIP_OPPORTUNITY_TYPES
 
 
+# published_date is normalized to ISO YYYY-MM-DD on write (master_db.models), so a
+# plain lexical sort is chronological. Undated rows (blank) are forced to the BOTTOM
+# for BOTH newest and oldest (rather than dominating either end); ingested_at breaks ties.
+_pub_undated_last = case((Opportunity.published_date == "", 1), else_=0)
 _OPPORTUNITY_SORTS = {
-    # newest / oldest by publication date (ingested_at breaks ties / covers blank dates)
-    "newest": (Opportunity.published_date.desc(), Opportunity.ingested_at.desc()),
-    "oldest": (Opportunity.published_date.asc(), Opportunity.ingested_at.asc()),
+    "newest": (_pub_undated_last.asc(), Opportunity.published_date.desc(), Opportunity.ingested_at.desc()),
+    "oldest": (_pub_undated_last.asc(), Opportunity.published_date.asc(), Opportunity.ingested_at.desc()),
     "score": (Opportunity.effective_opportunity_score.desc(),),
 }
 OPPORTUNITY_SORT_FIELDS = tuple(_OPPORTUNITY_SORTS)
@@ -199,12 +223,20 @@ OPPORTUNITY_SORT_FIELDS = tuple(_OPPORTUNITY_SORTS)
 def list_opportunities(session: Session, *, opportunity_type=None, company_domain=None,
                        date_from=None, date_to=None, annual_lists_only=False,
                        company_news_only=False, lifecycle_status=None,
-                       hide_archived=False, sort=None, limit=25, offset=0):
+                       hide_archived=False, sort=None, signal_category=None, limit=25, offset=0):
     filters = []
     if annual_lists_only:
         filters.append(Opportunity.opportunity_type == "ANNUAL_LIST")
     if company_news_only:
         filters.append(Opportunity.opportunity_type.in_(_COMPANY_NEWS_TYPES))
+    if signal_category:
+        # First-class LEADERSHIP | NEWS split (leadership people-movement events are
+        # kept out of the NEWS feed). Robust to un-backfilled rows on SQLite/self-heal
+        # by classifying on opportunity_type rather than trusting the stored column.
+        if signal_category.upper() == "LEADERSHIP":
+            filters.append(Opportunity.opportunity_type.in_(_LEADERSHIP_TYPES))
+        else:
+            filters.append(Opportunity.opportunity_type.notin_(_LEADERSHIP_TYPES))
     if opportunity_type:
         filters.append(Opportunity.opportunity_type == opportunity_type)
     if company_domain:
@@ -234,6 +266,17 @@ def list_opportunities(session: Session, *, opportunity_type=None, company_domai
 # ---------------------------------------------------- opportunity detail / news
 def get_opportunity(session: Session, opportunity_id: str) -> Opportunity | None:
     return session.get(Opportunity, opportunity_id)
+
+
+def delete_opportunity(session: Session, opportunity_id: str) -> bool:
+    """Hard-delete an opportunity (cascades to its sources + review history via the
+    ORM relationships). Returns False if it didn't exist."""
+    opp = session.get(Opportunity, opportunity_id)
+    if opp is None:
+        return False
+    session.delete(opp)
+    session.commit()
+    return True
 
 
 def opportunity_sources(session: Session, opportunity_id: str) -> list[OpportunityArticle]:
@@ -328,6 +371,67 @@ def leadership_signals_for(session: Session, domain: str) -> list[LeadershipSign
         select(LeadershipSignal).where(LeadershipSignal.company_domain == domain)
         .order_by(*_ldr_recency_order())
     ))
+
+
+def delete_leadership_signal(session: Session, signal_id: str) -> bool:
+    """Hard-delete one person-level leadership signal. Returns False if not found."""
+    sig = session.get(LeadershipSignal, signal_id)
+    if sig is None:
+        return False
+    session.delete(sig)
+    session.commit()
+    return True
+
+
+def delete_company(session: Session, domain: str) -> bool:
+    """Hard-delete a company. Every FK to companies.company_domain is ON DELETE
+    CASCADE (opportunities, leadership signals, aliases, sources, lead score, jobs,
+    demand, …) or SET NULL (decision makers), so the DB removes/detaches dependents.
+    Returns False if it didn't exist."""
+    company = session.get(Company, domain)
+    if company is None:
+        return False
+    session.delete(company)
+    session.commit()
+    return True
+
+
+def delete_decision_maker(session: Session, dm_id: int) -> bool:
+    """Hard-delete one decision maker. Returns False if not found."""
+    dm = session.get(DecisionMaker, dm_id)
+    if dm is None:
+        return False
+    session.delete(dm)
+    session.commit()
+    return True
+
+
+def _apply_patch(session: Session, obj, patch: dict):
+    """Set the given (already-validated, already-allowlisted) fields and commit."""
+    for field, value in patch.items():
+        setattr(obj, field, value)
+    session.commit()
+    return obj
+
+
+def update_company(session: Session, domain: str, patch: dict) -> Company | None:
+    company = session.get(Company, domain)
+    return _apply_patch(session, company, patch) if company is not None else None
+
+
+def update_decision_maker(session: Session, dm_id: int, patch: dict) -> DecisionMaker | None:
+    dm = session.get(DecisionMaker, dm_id)
+    return _apply_patch(session, dm, patch) if dm is not None else None
+
+
+def update_opportunity(session: Session, opportunity_id: str, patch: dict) -> Opportunity | None:
+    opp = session.get(Opportunity, opportunity_id)
+    return _apply_patch(session, opp, patch) if opp is not None else None
+
+
+def update_leadership_signal(session: Session, signal_id: str, patch: dict) -> LeadershipSignal | None:
+    sig = session.get(LeadershipSignal, signal_id)
+    return _apply_patch(session, sig, patch) if sig is not None else None
 
 
 def leadership_for_dm(session: Session, dm_id: int) -> list[LeadershipSignal]:
@@ -541,6 +645,20 @@ def grade_distribution(session: Session) -> dict[str, int]:
     }
 
 
+def signal_category_counts(session: Session) -> dict[str, int]:
+    """Opportunity counts per first-class signal category (LEADERSHIP vs NEWS).
+
+    Classifies on opportunity_type (not the stored signal_category column) so the
+    split is correct even on a fresh SQLite/self-heal DB where the 0047 backfill
+    hasn't run — the same robustness the list filter uses."""
+    leadership = session.scalar(
+        select(func.count()).select_from(Opportunity)
+        .where(Opportunity.opportunity_type.in_(_LEADERSHIP_TYPES))
+    ) or 0
+    total = session.scalar(select(func.count()).select_from(Opportunity)) or 0
+    return {"LEADERSHIP": int(leadership), "NEWS": int(total) - int(leadership)}
+
+
 def top_leads(session: Session, limit: int = 10):
     return session.execute(
         select(LeadScore, Company).join(Company, Company.company_domain == LeadScore.company_domain)
@@ -579,7 +697,11 @@ def list_review_actions(session: Session, review_id: int) -> list[ReviewAction]:
 
 
 # ------------------------------------------------------- pipeline + coverage
-PIPELINE_COMPONENTS = ("industry", "blog", "news", "annual_list", "company_news", "career", "linkedin", "scoring", "leadership", "engagement")
+# The AUTOMATIC pipeline components whose freshness the health strip reports (mirrors
+# orchestrator.PIPELINE_ORDER). decision_maker_intelligence is intentionally excluded:
+# it is manual-only (paid Apify actor) and therefore never a "scheduled job" whose
+# staleness should be flagged here. Its manual runs remain visible in pipeline_runs.
+PIPELINE_COMPONENTS = ("industry", "blog", "news", "annual_list", "company_news", "career", "scoring", "leadership", "engagement")
 
 
 def recent_pipeline_runs(session: Session, limit: int = 20) -> list[PipelineRun]:

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from backend import notifications, repositories as repo
 from backend.config import Settings
 from backend.dependencies import Pagination
+from backend.scheduler_config import read_config, write_config
 from backend.schemas import ExecutionOut, Page, RunNowResult, SchedulerStatusOut
 from backend.standard_run import RunInProgress, execute_standard_run
 from master_db.models import PipelineExecution
@@ -38,19 +39,30 @@ def _run_in_progress(session: Session) -> bool:
 
 
 def scheduler_status(session: Session, settings: Settings, scheduler) -> SchedulerStatusOut:
+    # Effective (runtime-editable) schedule — the persisted override over env defaults.
+    cfg = read_config(session, settings)
     last = session.scalar(select(PipelineExecution).order_by(PipelineExecution.id.desc()))
-    next_run = scheduler.next_run_at() if scheduler is not None else None
+    next_run = scheduler.next_run_at(cfg.schedule_times) if scheduler is not None else None
     return SchedulerStatusOut(
-        enabled=settings.scheduler_enabled,
+        enabled=cfg.enabled,
         running=scheduler.is_running() if scheduler is not None else False,
-        schedule_times=settings.schedule_times,
-        grace_minutes=settings.schedule_grace_minutes,
+        schedule_times=cfg.schedule_times,
+        grace_minutes=cfg.grace_minutes,
         next_run=next_run,
         notify_mode=settings.notify_mode,
         notify_configured=_notify_configured(settings),
         active_recipient_count=len(repo.list_active_users(session)),
         is_run_in_progress=_run_in_progress(session),
         last_run=ExecutionOut.model_validate(last) if last else None,
+    )
+
+
+def update_scheduler_config(session: Session, settings: Settings, *, payload, actor) -> None:
+    """Persist a new schedule (times / enabled / grace). Raises ValueError on bad input;
+    the scheduler thread picks up the change on its next tick."""
+    write_config(
+        session, schedule_times=payload.schedule_times, enabled=payload.enabled,
+        grace_minutes=payload.grace_minutes, actor_id=getattr(actor, "id", None),
     )
 
 

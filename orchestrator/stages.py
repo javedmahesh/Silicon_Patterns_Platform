@@ -287,9 +287,15 @@ STAGES: dict[str, Stage] = {
                    CAREER_DIR, 3600, "Career Scraper"),
         "Find demand -> jobs/demand_signals/company_rollups",
     ),
+    # MANUAL-ONLY stage: intentionally NOT in PIPELINE_ORDER (below). The Apify actor
+    # has a per-lead cost, so decision-maker intelligence is never run by the scheduler,
+    # a Standard Run, or `run all`. It is triggered explicitly — per company, with a
+    # requested count — from the Decision Makers page (backend/dm_intelligence_jobs.py)
+    # or via `sp-platform run decision_maker_intelligence`. Kept in the STAGES registry
+    # (and runnable via run_stage) so that manual path, and existing data, keep working.
     "decision_maker_intelligence": Stage(
         "decision_maker_intelligence", 4, [DecisionMaker], decision_maker_intelligence_ingest, None,
-        "Scrape decision makers (C-suite, directors, VPs) -> decision_makers (Apify)",
+        "Scrape decision makers (C-suite, directors, VPs) -> decision_makers (Apify) — MANUAL only",
     ),
     "scoring": Stage(
         "scoring", 5, [LeadScore], scoring_ingest, None,
@@ -305,4 +311,8 @@ STAGES: dict[str, Stage] = {
     ),
 }
 
-PIPELINE_ORDER: list[str] = ["industry", "blog", "news", "annual_list", "company_news", "career", "decision_maker_intelligence", "scoring", "leadership", "engagement"]
+# The AUTOMATIC pipeline — what the scheduler, a Standard Run, and `run all` execute.
+# ``decision_maker_intelligence`` is deliberately absent: it is manual-only (paid Apify
+# actor) and is triggered per-company from the Decision Makers page instead. It remains
+# in STAGES above so it can still be run on demand via ``run_stage`` / the manual job.
+PIPELINE_ORDER: list[str] = ["industry", "blog", "news", "annual_list", "company_news", "career", "scoring", "leadership", "engagement"]

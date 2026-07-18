@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -155,6 +156,7 @@ def _call_apify_actor(
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
     max_wait_seconds: int = DEFAULT_MAX_WAIT_SECONDS,
     batch_label: str = "",
+    total_results: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Run exactly ONE Apify actor run for this batch, and poll it to completion.
 
@@ -206,12 +208,15 @@ def _call_apify_actor(
     normalized_domains = list(dict.fromkeys(normalized_domains))[:10]  # de-dupe, cap at 10
 
     # Construct Apify actor input (field names + enum values verified against the
-    # leads-scraper-ppe build input schema).
+    # leads-scraper-ppe build input schema). ``total_results`` is the per-run lead
+    # cap; the manual per-company job passes each company's requested count here (one
+    # domain per run), clamped to the actor's documented 1..30000 range.
+    requested = DEFAULT_TOTAL_RESULTS if total_results is None else max(1, min(int(total_results), 30000))
     actor_input = {
         "companyDomain": normalized_domains,
         "seniority": seniority_levels,
         "includeEmails": True,
-        "totalResults": DEFAULT_TOTAL_RESULTS,
+        "totalResults": requested,
     }
     headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
     label = f" {batch_label}" if batch_label else ""
@@ -473,6 +478,79 @@ def import_decision_makers(session: Session, *, limit: int | None = None) -> Ing
         _capture_decision_maker_snapshots(session)
 
     return result
+
+
+@dataclass(slots=True)
+class CompanyDmResult:
+    """Outcome of running the Apify actor for ONE company (manual per-company job)."""
+    company_domain: str
+    records_returned: int
+    inserted: int
+    updated: int
+    apify_run_id: str | None
+    status: str          # "success" | "failed"
+    error: str = ""
+
+    @property
+    def records_found(self) -> int:
+        return self.inserted + self.updated
+
+
+def import_decision_makers_for_company(
+    session: Session, *, company: Company, requested_count: int,
+    actor_id: str | None = None, api_token: str | None = None,
+    pipeline_run_id: int | None = None,
+) -> CompanyDmResult:
+    """Run the Decision Maker Intelligence engine for ONE company with a per-company
+    lead count, record the ApifyActorRun, and bulk-upsert the results.
+
+    Reuses the EXACT same primitives as the pipeline stage — :func:`_call_apify_actor`
+    (create-once / poll, retry + logging) and :class:`ApifyIngestor` (the same upsert)
+    — so there is no duplicated scraper logic. Each call runs a single domain with its
+    own ``totalResults``, which is how the manual job supports a different requested
+    count per company. Never raises: a failure is captured on the returned result and
+    recorded as an ApifyActorRun so the progress UI can show it.
+    """
+    if not api_token or not actor_id:
+        _tok, _act = load_apify_credentials()
+        api_token = api_token or _tok
+        actor_id = actor_id or _act
+
+    domain = (company.company_domain or "").strip()
+    started = datetime.now(timezone.utc)
+    try:
+        records, run_info = _call_apify_actor(
+            actor_id=actor_id, api_token=api_token, company_domains=[domain],
+            batch_label=f"[dm {domain}]", total_results=requested_count,
+        )
+    except ApifyError as e:
+        session.add(ApifyActorRun(
+            actor_id=actor_id, apify_run_id=e.run_id, pipeline_run_id=pipeline_run_id,
+            batch_index=0, company_count=1, status=e.status or "failed",
+            started_at=started, finished_at=datetime.now(timezone.utc),
+            records_returned=0, error_message=str(e)[:2000],
+        ))
+        session.commit()
+        return CompanyDmResult(domain, 0, 0, 0, e.run_id, "failed", str(e))
+
+    # Respect the user's desired number exactly: keep at most `requested_count` leads
+    # for this company (the paid actor may return more than asked; we don't ingest the
+    # surplus, so records_found never exceeds the requested count).
+    capped = records[: max(0, int(requested_count))] if requested_count else records
+    session.add(ApifyActorRun(
+        actor_id=actor_id, apify_run_id=run_info.get("run_id"), pipeline_run_id=pipeline_run_id,
+        batch_index=0, company_count=1, status=run_info.get("status", "unknown"),
+        started_at=run_info.get("started_at"), finished_at=run_info.get("finished_at"),
+        records_returned=len(capped), error_message=(run_info.get("status_message") or None),
+    ))
+    ingestor = ApifyIngestor(session, create_stub=False, mode="pipeline")
+    result = ingestor.ingest_rows(capped, source_label="apify")
+    session.commit()
+    inserted = max(0, result.rows_upserted - result.rows_duplicate)
+    return CompanyDmResult(
+        company_domain=domain, records_returned=len(capped), inserted=inserted,
+        updated=result.rows_duplicate, apify_run_id=run_info.get("run_id"), status="success",
+    )
 
 
 def _log_benchmark_report(

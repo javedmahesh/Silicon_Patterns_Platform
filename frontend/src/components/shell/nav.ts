@@ -1,13 +1,10 @@
 import {
   BarChart3,
-  Briefcase,
   Building2,
   CalendarClock,
   CheckSquare,
   ClipboardList,
   FileText,
-  Handshake,
-  HeartPulse,
   Inbox,
   KanbanSquare,
   LayoutDashboard,
@@ -59,20 +56,18 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Signals",
     items: [
       { label: "Opportunities", to: "/opportunities", icon: Megaphone },
+      { label: "Leadership", to: "/leadership", icon: UserCog },
       { label: "Decision makers", to: "/decision-makers", icon: Users },
     ],
   },
   {
-    label: "Intelligence",
-    items: [{ label: "Analytics", to: "/analytics", icon: BarChart3 }],
-  },
-  {
     label: "System",
     items: [
-      { label: "Review queue", to: "/review-queue", icon: ShieldCheck },
-      { label: "Scheduler", to: "/scheduler", icon: CalendarClock },
-      { label: "Team", to: "/team", icon: UserCog, role: "manager" },
       { label: "Administration", to: "/administration", icon: Settings, role: "admin" },
+      { label: "Team", to: "/team", icon: UserCog, role: "manager" },
+      { label: "Scheduler", to: "/scheduler", icon: CalendarClock },
+      { label: "Review queue", to: "/review-queue", icon: ShieldCheck },
+      { label: "Analytics", to: "/analytics", icon: BarChart3 },
     ],
   },
   {
@@ -83,26 +78,6 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "Campaigns", to: "/campaigns", icon: Target, end: true },
       { label: "Sequences", to: "/campaigns/sequences", icon: Workflow },
       { label: "Enrollments", to: "/campaigns/enrollments", icon: ListChecks },
-    ],
-  },
-  {
-    // Enterprise CRM Phase 2 — deals move through a configurable pipeline of
-    // stages; distinct from the Outreach module's own lead-stage Kanban below.
-    label: "Deals",
-    items: [
-      { label: "Pipeline", to: "/deals", icon: KanbanSquare, end: true },
-      { label: "Deal list", to: "/deals/list", icon: Handshake },
-      { label: "Analytics", to: "/deals/analytics", icon: BarChart3 },
-    ],
-  },
-  {
-    // Enterprise CRM Phase 4 — customer accounts post-sale: health, contracts/
-    // renewals, success plans, and risk tracking.
-    label: "Customer Success",
-    items: [
-      { label: "Dashboard", to: "/customer-success", icon: HeartPulse, end: true },
-      { label: "Accounts", to: "/customer-success/accounts", icon: Briefcase },
-      { label: "Renewals", to: "/customer-success/renewals", icon: CalendarClock },
     ],
   },
   {

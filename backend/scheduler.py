@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from backend.config import Settings
+from backend.scheduler_config import read_config
 from backend.standard_run import RunInProgress, execute_standard_run
 from master_db.models import PipelineExecution
 
@@ -91,21 +92,25 @@ class PipelineScheduler:
             except Exception:  # a bad tick must never kill the scheduler
                 logger.exception("scheduler tick failed (continuing)")
 
-    def _window(self) -> timedelta:
+    def _window(self, grace_minutes: int) -> timedelta:
         # Grace controls how late a MISSED slot may still fire; floor it above a few
         # ticks so a normal on-time fire is always caught.
-        return max(timedelta(minutes=self._settings.schedule_grace_minutes),
-                   timedelta(seconds=_TICK_SECONDS * 3))
+        return max(timedelta(minutes=grace_minutes), timedelta(seconds=_TICK_SECONDS * 3))
 
     def _tick(self) -> None:
         now_local = datetime.now().astimezone()
         now_utc = datetime.now(timezone.utc)
-        window = self._window()
-        for slot in self._settings.schedule_times:
-            slot_utc = _slot_today_utc(now_local, slot)
-            if not (slot_utc <= now_utc <= slot_utc + window):
-                continue
-            with self._sessionmaker() as session:
+        # Re-read the (runtime-editable) schedule every tick, so a change made on the
+        # Scheduler page takes effect within one tick — no restart needed.
+        with self._sessionmaker() as session:
+            cfg = read_config(session, self._settings)
+            if not cfg.enabled:
+                return
+            window = self._window(cfg.grace_minutes)
+            for slot in cfg.schedule_times:
+                slot_utc = _slot_today_utc(now_local, slot)
+                if not (slot_utc <= now_utc <= slot_utc + window):
+                    continue
                 if self._already_ran(session, slot, slot_utc):
                     continue
                 self._fire(session, slot)
@@ -138,9 +143,12 @@ class PipelineScheduler:
             logger.exception("scheduled run for slot %s failed", slot)
 
     # ------------------------------------------------------------- introspection
-    def next_run_at(self) -> datetime | None:
-        """The soonest upcoming slot boundary (aware-UTC), or None if no slots."""
-        slots = self._settings.schedule_times
+    def next_run_at(self, times: list[str] | None = None) -> datetime | None:
+        """The soonest upcoming slot boundary (aware-UTC), or None if no slots.
+
+        ``times`` lets the caller pass the effective (runtime-overridden) schedule;
+        defaults to the env-configured slots when omitted."""
+        slots = times if times is not None else self._settings.schedule_times
         if not slots:
             return None
         now_local = datetime.now().astimezone()

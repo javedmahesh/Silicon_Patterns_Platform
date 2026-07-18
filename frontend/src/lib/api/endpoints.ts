@@ -5,7 +5,14 @@ import type {
   AuthResult,
   CompanyProfile,
   CompanySummary,
+  CompanyCreate,
+  CompanyUpdate,
+  DecisionMakerUpdate,
+  OpportunityUpdate,
+  LeadershipSignalUpdate,
   DecisionMakerCompanies,
+  DmIntelligenceJobOut,
+  DmIntelligenceRunIn,
   AlertOut,
   CompanyContactsOut,
   CompanyIntelligenceOut,
@@ -86,49 +93,19 @@ import type {
   CrmSequenceStepIn,
   CrmSequenceStepPatch,
   CrmEnrollmentOut,
-  PipelineOut,
-  PipelineCreate,
-  PipelinePatch,
-  PipelineStageOut,
-  PipelineStageCreate,
-  PipelineStagePatch,
-  DealOut,
-  DealCreate,
-  DealPatch,
-  DealStageHistoryOut,
-  KanbanOut,
-  ForecastOut,
-  DealAnalyticsOut,
-  DealDashboardOut,
-  DealIntelligenceOut,
-  CsAccountOut,
-  CsAccountCreate,
-  CsAccountPatch,
-  CsContactOut,
-  CsContactCreate,
-  CsContactPatch,
-  CsHealthScoreOut,
-  CsHealthScoreCreate,
-  CsLifecycleEventOut,
-  CsContractOut,
-  CsContractCreate,
-  CsContractPatch,
-  CsSuccessPlanOut,
-  CsSuccessPlanCreate,
-  CsSuccessPlanPatch,
-  CsMilestoneOut,
-  CsMilestoneCreate,
-  CsMilestonePatch,
-  CsRiskOut,
-  CsRiskCreate,
-  CsRiskPatch,
-  CsTimelineEvent,
-  CsDashboardOut,
-  CsAnalyticsOut,
   SchedulerStatusOut,
+  SchedulerConfigIn,
   ExecutionOut,
   RunNowResult,
+  RunEngineRecordsOut,
 } from "./types";
+import type {
+  AuditEventDTO,
+  ImportJobDTO,
+  ImportReportDTO,
+  ReviewResponseDTO,
+  ReviewStatsDTO,
+} from "./import-types";
 
 export type CompanyListParams = {
   page?: number;
@@ -161,6 +138,7 @@ export type OpportunityListParams = {
   lifecycle_status?: string;
   hide_archived?: boolean;
   sort?: "newest" | "oldest" | "score";
+  signal_category?: string;   // LEADERSHIP | NEWS (first-class category split)
 }
 
 export type DemandListParams = {
@@ -222,40 +200,6 @@ export type EnrollmentListParams = {
   offset?: number;
 }
 
-export type PipelineListParams = {
-  active_only?: boolean;
-  limit?: number;
-  offset?: number;
-}
-
-export type DealListParams = {
-  pipeline_id?: number;
-  stage_id?: number;
-  owner_id?: number;
-  company_domain?: string;
-  forecast_category?: string;
-  search?: string;
-  closing_before?: string;
-  closing_after?: string;
-  limit?: number;
-  offset?: number;
-}
-
-export type CsAccountListParams = {
-  status?: string;
-  tier?: string;
-  lifecycle_stage?: string;
-  limit?: number;
-  offset?: number;
-}
-
-export type CsContractListParams = {
-  account_id?: number;
-  status?: string;
-  limit?: number;
-  offset?: number;
-}
-
 function actorHeader(actor?: string): Record<string, string> {
   return actor ? { "X-Actor": actor } : {};
 }
@@ -273,8 +217,14 @@ export const api = {
 
   companies: (p: CompanyListParams = {}) =>
     request<Page<CompanySummary>>("/companies", { params: p }),
+  createCompany: (body: CompanyCreate) =>
+    request<CompanySummary>("/companies", { method: "POST", body }),
   companyProfile: (domain: string) =>
     request<CompanyProfile>(`/companies/${encodeURIComponent(domain)}`),
+  updateCompany: (domain: string, body: CompanyUpdate) =>
+    request<CompanySummary>(`/companies/${encodeURIComponent(domain)}`, { method: "PATCH", body }),
+  deleteCompany: (domain: string) =>
+    request<null>(`/companies/${encodeURIComponent(domain)}`, { method: "DELETE" }),
 
   leads: (p: LeadListParams = {}) => request<Page<LeadOut>>("/leads", { params: p }),
 
@@ -292,6 +242,10 @@ export const api = {
       method: "POST",
       params: { lifecycle_status },
     }),
+  updateOpportunity: (id: string, body: OpportunityUpdate) =>
+    request<OpportunityOut>(`/opportunities/${encodeURIComponent(id)}`, { method: "PATCH", body }),
+  deleteOpportunity: (id: string) =>
+    request<null>(`/opportunities/${encodeURIComponent(id)}`, { method: "DELETE" }),
   newsSources: () => request<NewsSourceOut[]>("/opportunities/news-sources"),
   createNewsSource: (body: NewsSourceIn) =>
     request<NewsSourceOut>("/opportunities/news-sources", { method: "POST", body }),
@@ -305,11 +259,27 @@ export const api = {
 
   decisionMakers: (p: DecisionMakerListParams = {}) =>
     request<Page<DecisionMakerOut>>("/decision-makers", { params: p }),
+  updateDecisionMaker: (id: number, body: DecisionMakerUpdate) =>
+    request<DecisionMakerOut>(`/decision-makers/${id}`, { method: "PATCH", body }),
+  deleteDecisionMaker: (id: number) =>
+    request<null>(`/decision-makers/${id}`, { method: "DELETE" }),
 
   leadershipSignals: (p: LeadershipSignalListParams = {}) =>
     request<Page<LeadershipSignalOut>>("/leadership-signals", { params: p }),
+  updateLeadershipSignal: (id: string, body: LeadershipSignalUpdate) =>
+    request<LeadershipSignalOut>(`/leadership-signals/${encodeURIComponent(id)}`, { method: "PATCH", body }),
+  deleteLeadershipSignal: (id: string) =>
+    request<null>(`/leadership-signals/${encodeURIComponent(id)}`, { method: "DELETE" }),
   decisionMakerCompanies: () =>
     request<DecisionMakerCompanies>("/decision-makers/companies"),
+
+  // Manual Decision Maker Intelligence (paid Apify) — run + poll live progress.
+  runDmIntelligence: (body: DmIntelligenceRunIn) =>
+    request<DmIntelligenceJobOut>("/decision-makers/intelligence-runs", { method: "POST", body }),
+  dmIntelligenceRuns: () =>
+    request<DmIntelligenceJobOut[]>("/decision-makers/intelligence-runs"),
+  dmIntelligenceRun: (id: number) =>
+    request<DmIntelligenceJobOut>(`/decision-makers/intelligence-runs/${id}`),
   companyContacts: (domain: string) =>
     request<CompanyContactsOut>(`/decision-makers/company/${encodeURIComponent(domain)}`),
   companyIntelligence: (domain: string) =>
@@ -560,99 +530,44 @@ export const api = {
       request<CrmEnrollmentOut>(`/enrollments/${id}/steps/${stepId}/skip`, { method: "POST" }),
   },
 
-  // --- Enterprise CRM Phase 2: pipelines / deals ---
-  pipelines: {
-    list: (p: PipelineListParams = {}) => request<Page<PipelineOut>>("/pipelines", { params: p }),
-    get: (id: number) => request<PipelineOut>(`/pipelines/${id}`),
-    create: (body: PipelineCreate) => request<PipelineOut>("/pipelines", { method: "POST", body }),
-    patch: (id: number, body: PipelinePatch) => request<PipelineOut>(`/pipelines/${id}`, { method: "PATCH", body }),
-    delete: (id: number) => request<null>(`/pipelines/${id}`, { method: "DELETE" }),
-    dashboard: (pipelineId?: number) => request<DealDashboardOut>("/pipelines/dashboard", { params: { pipeline_id: pipelineId } }),
-    kanban: (id: number, p: { stage_id?: number; owner_id?: number; search?: string } = {}) =>
-      request<KanbanOut>(`/pipelines/${id}/kanban`, { params: p }),
-    forecast: (id: number) => request<ForecastOut>(`/pipelines/${id}/forecast`),
-    analytics: (id: number) => request<DealAnalyticsOut>(`/pipelines/${id}/analytics`),
-
-    addStage: (id: number, body: PipelineStageCreate) =>
-      request<PipelineStageOut>(`/pipelines/${id}/stages`, { method: "POST", body }),
-    patchStage: (id: number, stageId: number, body: PipelineStagePatch) =>
-      request<PipelineStageOut>(`/pipelines/${id}/stages/${stageId}`, { method: "PATCH", body }),
-    deleteStage: (id: number, stageId: number) =>
-      request<null>(`/pipelines/${id}/stages/${stageId}`, { method: "DELETE" }),
-  },
-
-  deals: {
-    list: (p: DealListParams = {}) => request<Page<DealOut>>("/deals", { params: p }),
-    get: (id: number) => request<DealOut>(`/deals/${id}`),
-    create: (body: DealCreate) => request<DealOut>("/deals", { method: "POST", body }),
-    patch: (id: number, body: DealPatch) => request<DealOut>(`/deals/${id}`, { method: "PATCH", body }),
-    delete: (id: number) => request<null>(`/deals/${id}`, { method: "DELETE" }),
-    move: (id: number, stageId: number) =>
-      request<DealOut>(`/deals/${id}/move`, { method: "POST", body: { stage_id: stageId } }),
-    history: (id: number) => request<DealStageHistoryOut[]>(`/deals/${id}/history`),
-    timeline: (id: number, p: { limit?: number; offset?: number } = {}) =>
-      request<UnifiedTimelineEvent[]>(`/deals/${id}/timeline`, { params: p }),
-    intelligence: (id: number) => request<DealIntelligenceOut>(`/deals/${id}/intelligence`),
-  },
-
-  // --- Enterprise CRM Phase 4: customer success ---
-  cs: {
-    accounts: (p: CsAccountListParams = {}) => request<Page<CsAccountOut>>("/cs/accounts", { params: p }),
-    account: (id: number) => request<CsAccountOut>(`/cs/accounts/${id}`),
-    createAccount: (body: CsAccountCreate) => request<CsAccountOut>("/cs/accounts", { method: "POST", body }),
-    patchAccount: (id: number, body: CsAccountPatch) =>
-      request<CsAccountOut>(`/cs/accounts/${id}`, { method: "PATCH", body }),
-    deleteAccount: (id: number) => request<null>(`/cs/accounts/${id}`, { method: "DELETE" }),
-
-    contacts: (accountId: number) => request<CsContactOut[]>(`/cs/accounts/${accountId}/contacts`),
-    createContact: (body: CsContactCreate) => request<CsContactOut>("/cs/contacts", { method: "POST", body }),
-    patchContact: (id: number, body: CsContactPatch) =>
-      request<CsContactOut>(`/cs/contacts/${id}`, { method: "PATCH", body }),
-    deleteContact: (id: number) => request<null>(`/cs/contacts/${id}`, { method: "DELETE" }),
-
-    scoreAccount: (accountId: number, body: CsHealthScoreCreate) =>
-      request<CsHealthScoreOut>(`/cs/accounts/${accountId}/health`, { method: "POST", body }),
-    health: (accountId: number) => request<CsHealthScoreOut>(`/cs/accounts/${accountId}/health`),
-    healthHistory: (accountId: number) => request<CsHealthScoreOut[]>(`/cs/accounts/${accountId}/health/history`),
-
-    lifecycle: (accountId: number) => request<CsLifecycleEventOut[]>(`/cs/accounts/${accountId}/lifecycle`),
-
-    contracts: (p: CsContractListParams = {}) => request<Page<CsContractOut>>("/cs/contracts", { params: p }),
-    createContract: (body: CsContractCreate) => request<CsContractOut>("/cs/contracts", { method: "POST", body }),
-    patchContract: (id: number, body: CsContractPatch) =>
-      request<CsContractOut>(`/cs/contracts/${id}`, { method: "PATCH", body }),
-    deleteContract: (id: number) => request<null>(`/cs/contracts/${id}`, { method: "DELETE" }),
-
-    plans: (accountId: number) => request<CsSuccessPlanOut[]>(`/cs/accounts/${accountId}/plans`),
-    createPlan: (body: CsSuccessPlanCreate) => request<CsSuccessPlanOut>("/cs/plans", { method: "POST", body }),
-    patchPlan: (id: number, body: CsSuccessPlanPatch) =>
-      request<CsSuccessPlanOut>(`/cs/plans/${id}`, { method: "PATCH", body }),
-    deletePlan: (id: number) => request<null>(`/cs/plans/${id}`, { method: "DELETE" }),
-
-    milestones: (planId: number) => request<CsMilestoneOut[]>(`/cs/plans/${planId}/milestones`),
-    createMilestone: (body: CsMilestoneCreate) => request<CsMilestoneOut>("/cs/milestones", { method: "POST", body }),
-    patchMilestone: (id: number, body: CsMilestonePatch) =>
-      request<CsMilestoneOut>(`/cs/milestones/${id}`, { method: "PATCH", body }),
-    deleteMilestone: (id: number) => request<null>(`/cs/milestones/${id}`, { method: "DELETE" }),
-
-    risks: (accountId: number, status?: string) =>
-      request<CsRiskOut[]>(`/cs/accounts/${accountId}/risks`, { params: { status } }),
-    createRisk: (body: CsRiskCreate) => request<CsRiskOut>("/cs/risks", { method: "POST", body }),
-    patchRisk: (id: number, body: CsRiskPatch) => request<CsRiskOut>(`/cs/risks/${id}`, { method: "PATCH", body }),
-    deleteRisk: (id: number) => request<null>(`/cs/risks/${id}`, { method: "DELETE" }),
-
-    timeline: (accountId: number, p: { limit?: number; offset?: number } = {}) =>
-      request<CsTimelineEvent[]>(`/cs/accounts/${accountId}/timeline`, { params: p }),
-
-    dashboard: () => request<CsDashboardOut>("/cs/dashboard"),
-    analytics: () => request<CsAnalyticsOut>("/cs/analytics"),
-  },
-
   scheduler: {
     status: () => request<SchedulerStatusOut>("/scheduler/status"),
+    updateConfig: (body: SchedulerConfigIn) =>
+      request<SchedulerStatusOut>("/scheduler/config", { method: "PUT", body }),
     runs: (p: { page?: number; page_size?: number } = {}) =>
       request<Page<ExecutionOut>>("/scheduler/runs", { params: p }),
     run: (runId: string) => request<ExecutionOut>(`/scheduler/runs/${encodeURIComponent(runId)}`),
     runNow: () => request<RunNowResult>("/scheduler/run-now", { method: "POST" }),
+    runEngineRecords: (runId: string, engine: string, p: { page?: number; page_size?: number } = {}) =>
+      request<RunEngineRecordsOut>(
+        `/scheduler/runs/${encodeURIComponent(runId)}/engines/${encodeURIComponent(engine)}/records`,
+        { params: p },
+      ),
+  },
+
+  // Historical Import (Phases 2–6). Endpoints return plain JSON (see import-types.ts).
+  imports: {
+    upload: (body: { filename: string; content_base64: string }) =>
+      request<ImportJobDTO>("/sync/imports/upload", { method: "POST", body }),
+    list: () => request<{ items: ImportJobDTO[] }>("/sync/imports"),
+    get: (id: string) => request<ImportJobDTO & { stats?: unknown }>(`/sync/imports/${encodeURIComponent(id)}`),
+    review: (id: string, params?: { category?: string; state?: string }) =>
+      request<ReviewResponseDTO>(`/sync/imports/${encodeURIComponent(id)}/review`, { params }),
+    reviewStats: (id: string) =>
+      request<ReviewStatsDTO>(`/sync/imports/${encodeURIComponent(id)}/review/stats`),
+    audit: (id: string) =>
+      request<{ events: AuditEventDTO[] }>(`/sync/imports/${encodeURIComponent(id)}/review/audit`),
+    decide: (id: string, body: { kind: string; source_ref: string; decision: string; reason?: string }) =>
+      request<{ state: string }>(`/sync/imports/${encodeURIComponent(id)}/review/decide`, { method: "POST", body }),
+    resolve: (id: string, body: { kind: string; source_ref: string; field: string; choice: string; reason?: string }) =>
+      request<{ state: string; field_decisions: Record<string, string> }>(
+        `/sync/imports/${encodeURIComponent(id)}/review/resolve`, { method: "POST", body }),
+    bulk: (id: string, body: { action: string; refs?: { kind: string; source_ref: string }[]; category?: string }) =>
+      request<{ changed: number; stats: ReviewStatsDTO }>(
+        `/sync/imports/${encodeURIComponent(id)}/review/bulk`, { method: "POST", body }),
+    commit: (id: string, dryRun = false) =>
+      request<ImportReportDTO>(`/sync/imports/${encodeURIComponent(id)}/commit`, {
+        method: "POST", params: { dry_run: dryRun },
+      }),
   },
 };

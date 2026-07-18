@@ -14,6 +14,7 @@ If you change a column here, change the matching migration too (and vice versa).
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from functools import cached_property
 
@@ -30,9 +31,11 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy import event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from config.enums import (
+    signal_category_for,
     AI_COPILOT_QUERY_TYPES,
     AI_INSIGHT_SEVERITIES,
     AI_INSIGHT_STATUSES,
@@ -59,6 +62,10 @@ from config.enums import (
     CAMPAIGN_STATUSES,
     CAMPAIGN_TYPES,
     COMPANY_TIERS,
+    IMPORT_JOB_STATUSES,
+    REVIEW_CATEGORIES,
+    REVIEW_KINDS,
+    REVIEW_STATES,
     CS_ACCOUNT_STATUSES,
     CS_ACCOUNT_TIERS,
     CS_CONTACT_ROLES,
@@ -75,6 +82,8 @@ from config.enums import (
     DEAL_PIPELINE_STAGE_TYPES,
     COMPLIANCE_FLAGS,
     CONFIDENCE_LEVELS,
+    DM_JOB_ITEM_STATUSES,
+    DM_JOB_STATUSES,
     DM_NOTE_TYPES,
     EMAIL_ATTACHMENT_STATUSES,
     EMAIL_CONNECTION_STATUSES,
@@ -327,6 +336,7 @@ class Opportunity(Base):
         Index("ix_opportunities_type", "opportunity_type"),
         Index("ix_opportunities_validation", "validation_status"),
         Index("ix_opportunities_eff_score", "effective_opportunity_score"),
+        Index("ix_opportunities_signal_category", "signal_category"),
     )
 
     opportunity_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -347,6 +357,11 @@ class Opportunity(Base):
     event_age_days: Mapped[int] = mapped_column(Integer, default=-1)
     opportunity_type: Mapped[str] = mapped_column(String(64), default="")
     opportunity_category: Mapped[str] = mapped_column(String(64), default="")
+    # First-class signal category (LEADERSHIP | NEWS), derived from opportunity_type
+    # and kept in sync by the ORM listener below (so every writer — the news engine,
+    # every ingestor, tests — agrees) plus the migration backfill. Leadership
+    # people-movement events are separated OUT of the general NEWS feed everywhere.
+    signal_category: Mapped[str] = mapped_column(String(20), default="NEWS")
     # One-line human-readable signal (Change_04 annual-list rank "Rank: N"; shared with
     # Change_03 company-news moves). Added by migration 0016.
     company_news_signal: Mapped[str] = mapped_column(String(512), default="")
@@ -413,6 +428,64 @@ class Opportunity(Base):
         back_populates="opportunity", cascade="all, delete-orphan",
         order_by="OpportunityReview.created_at.desc()",
     )
+
+
+@event.listens_for(Opportunity, "before_insert")
+@event.listens_for(Opportunity, "before_update")
+def _sync_opportunity_signal_category(_mapper, _conn, target: "Opportunity") -> None:
+    """Keep signal_category derived from opportunity_type on every write, so the
+    LEADERSHIP vs NEWS split is consistent no matter which writer created the row
+    (news engine, company_news / blog / annual_list ingestors, tests) — one place,
+    no per-writer drift. See config.enums.signal_category_for + migration 0047."""
+    target.signal_category = signal_category_for(target.opportunity_type)
+
+
+_PUBLISHED_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def normalize_published_date(value: str | None) -> str:
+    """Best-effort feed date -> ``YYYY-MM-DD`` so opportunities sort and filter
+    chronologically no matter how a source phrased it: ISO datetime, ISO date,
+    ``YYYY-MM``, bare ``YYYY``, ``Month D, YYYY``, or ``D Month YYYY``. A blank or
+    unparseable value is returned as its trimmed self — a date is never invented."""
+    s = (value or "").strip()
+    if not s:
+        return ""
+    # ISO date or datetime -> keep the date part.
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    # YYYY-MM -> first of month.
+    m = re.fullmatch(r"(\d{4})-(\d{2})", s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-01"
+    # Bare YYYY (e.g. an annual-list year) -> Jan 1.
+    m = re.fullmatch(r"(\d{4})", s)
+    if m:
+        return f"{m.group(1)}-01-01"
+    # "Month D, YYYY" / "Mon. D YYYY" (comma optional).
+    m = re.match(r"([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})", s)
+    if m and m.group(1)[:3].lower() in _PUBLISHED_MONTHS:
+        return f"{int(m.group(3)):04d}-{_PUBLISHED_MONTHS[m.group(1)[:3].lower()]:02d}-{int(m.group(2)):02d}"
+    # "D Month YYYY".
+    m = re.match(r"(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})", s)
+    if m and m.group(2)[:3].lower() in _PUBLISHED_MONTHS:
+        return f"{int(m.group(3)):04d}-{_PUBLISHED_MONTHS[m.group(2)[:3].lower()]:02d}-{int(m.group(1)):02d}"
+    return s
+
+
+@event.listens_for(Opportunity, "before_insert")
+@event.listens_for(Opportunity, "before_update")
+def _normalize_opportunity_published_date(_mapper, _conn, target: "Opportunity") -> None:
+    """Normalize published_date to ISO ``YYYY-MM-DD`` on every write so the
+    Opportunities newest/oldest sort and date-range filters are chronologically
+    correct regardless of which writer created the row. The news engine already
+    emits ISO; this makes every other writer (blog / annual_list / company_news
+    ingestors, tests) consistent — one place, no per-writer drift."""
+    target.published_date = normalize_published_date(target.published_date)
 
 
 class NewsSource(Base):
@@ -833,6 +906,184 @@ class ApifyActorRun(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class DmIntelligenceJob(Base):
+    """A MANUAL Decision Maker Intelligence run over a chosen set of companies.
+
+    DM intelligence is never scheduled (paid Apify actor). A user triggers a job from
+    the Decision Makers page picking one-or-many companies, each with its OWN requested
+    lead count; the job runs the existing Apify engine per company on a background
+    thread and records live per-company progress in :class:`DmIntelligenceJobItem`.
+    Linked to a ``pipeline_runs`` row (``pipeline_run_id``) so the manual execution
+    also shows up in the existing pipeline run history.
+    """
+
+    __tablename__ = "dm_intelligence_jobs"
+    __table_args__ = (
+        CheckConstraint(_in("status", DM_JOB_STATUSES), name="ck_dm_job_status"),
+        Index("ix_dm_job_status", "status"),
+        Index("ix_dm_job_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    requested_by_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    requested_by_email: Mapped[str] = mapped_column(String(320), default="")
+    total_companies: Mapped[int] = mapped_column(Integer, default=0)
+    total_requested: Mapped[int] = mapped_column(Integer, default=0)
+    total_found: Mapped[int] = mapped_column(Integer, default=0)
+    # Soft link to the pipeline_runs audit row for this manual execution (nullable so
+    # a job row can exist before/without the tracker row).
+    pipeline_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+
+    items: Mapped[list["DmIntelligenceJobItem"]] = relationship(
+        back_populates="job", cascade="all, delete-orphan", order_by="DmIntelligenceJobItem.id",
+    )
+
+
+class DmIntelligenceJobItem(Base):
+    """One company within a :class:`DmIntelligenceJob` — its requested count and live
+    progress (queued -> running -> completed/failed) with records found, timing, the
+    Apify run id, and any error."""
+
+    __tablename__ = "dm_intelligence_job_items"
+    __table_args__ = (
+        CheckConstraint(_in("status", DM_JOB_ITEM_STATUSES), name="ck_dm_job_item_status"),
+        Index("ix_dm_job_item_job", "job_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("dm_intelligence_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    company_domain: Mapped[str] = mapped_column(String(255), default="")
+    company_name: Mapped[str] = mapped_column(String(255), default="")
+    requested_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    records_found: Mapped[int] = mapped_column(Integer, default=0)
+    apify_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+
+    job: Mapped["DmIntelligenceJob"] = relationship(back_populates="items")
+
+
+class ImportJob(Base):
+    """Reusable tracking for one historical-data import run (Phase 3).
+
+    A single job spans company + decision-maker synchronization for one uploaded file.
+    ``status='previewed'`` records a read-only reconciliation preview (no data written);
+    the Phase-4 apply step reuses the same row (running -> completed/failed) and the same
+    counters. ``stats`` holds the full preview payload as JSON for the Admin Import UI.
+    Additive and independent of every other table.
+    """
+
+    __tablename__ = "import_jobs"
+    __table_args__ = (
+        CheckConstraint(_in("status", IMPORT_JOB_STATUSES), name="ck_import_job_status"),
+        Index("ix_import_jobs_status", "status"),
+        Index("ix_import_jobs_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    import_id: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
+    source: Mapped[str] = mapped_column(String(60), default="historical_excel")
+    filename: Mapped[str] = mapped_column(String(512), default="")
+    initiated_by: Mapped[str] = mapped_column(String(320), default="")
+    status: Mapped[str] = mapped_column(String(20), default="previewed")
+    companies_processed: Mapped[int] = mapped_column(Integer, default=0)
+    decision_makers_processed: Mapped[int] = mapped_column(Integer, default=0)
+    created_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0)
+    unchanged_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
+    conflict_count: Mapped[int] = mapped_column(Integer, default=0)
+    invalid_count: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    stats: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Phase 4 execution tracking. `preview` holds the full serialized company + DM
+    # synchronization results so the commit step consumes them WITHOUT reconciling
+    # again. The rest powers live progress for the future Admin UI.
+    preview: Mapped[dict] = mapped_column(JSON, default=dict)
+    current_stage: Mapped[str] = mapped_column(String(40), default="")
+    records_processed: Mapped[int] = mapped_column(Integer, default=0)
+    total_records: Mapped[int] = mapped_column(Integer, default=0)
+    progress_pct: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ImportReviewItem(Base):
+    """One reviewable record from an import preview (Phase 5).
+
+    Seeded from the Phase-2/3 synchronization results when a combined import preview is
+    created. Every record gets an explicit ``state``; ``field_decisions`` records the
+    per-field keep-platform/accept-historical choices for updates and conflicts. Only
+    ``approved``/``resolved`` items reach the transaction engine at commit time.
+    """
+
+    __tablename__ = "import_review_items"
+    __table_args__ = (
+        UniqueConstraint("job_id", "record_kind", "source_ref", name="uq_review_item_ref"),
+        CheckConstraint(_in("record_kind", REVIEW_KINDS), name="ck_review_item_kind"),
+        CheckConstraint(_in("category", REVIEW_CATEGORIES), name="ck_review_item_category"),
+        CheckConstraint(_in("state", REVIEW_STATES), name="ck_review_item_state"),
+        Index("ix_review_items_job", "job_id"),
+        Index("ix_review_items_state", "job_id", "state"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("import_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    record_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_ref: Mapped[str] = mapped_column(String(120), nullable=False)
+    category: Mapped[str] = mapped_column(String(30), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), default="pending")
+    field_decisions: Mapped[dict] = mapped_column(JSON, default=dict)
+    label: Mapped[str] = mapped_column(String(255), default="")   # display name (company/person)
+    reviewer: Mapped[str] = mapped_column(String(320), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ImportReviewEvent(Base):
+    """Immutable audit trail of every review decision (Phase 5). Never deleted."""
+
+    __tablename__ = "import_review_events"
+    __table_args__ = (
+        Index("ix_review_events_job", "job_id"),
+        Index("ix_review_events_item", "review_item_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("import_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    review_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("import_review_items.id", ondelete="SET NULL"), nullable=True
+    )
+    record_kind: Mapped[str] = mapped_column(String(20), default="")
+    source_ref: Mapped[str] = mapped_column(String(120), default="")
+    action: Mapped[str] = mapped_column(String(30), nullable=False)
+    field: Mapped[str] = mapped_column(String(120), default="")
+    previous_value: Mapped[str] = mapped_column(Text, default="")
+    approved_value: Mapped[str] = mapped_column(Text, default="")
+    reviewer: Mapped[str] = mapped_column(String(320), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 # =====================================================================
 # Platform-owned tables (mirror 0003_platform_tables.sql)
 # =====================================================================
@@ -1111,6 +1362,36 @@ class PipelineExecution(Base):
     notification_status: Mapped[str] = mapped_column(String(20), default="pending")
     notification_detail: Mapped[str] = mapped_column(Text, default="")
     notified_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class RunEngineRecord(Base):
+    """One lightweight reference per canonical record a Standard Run's engine touched
+    (migration 0053). Powers the Run Details per-engine drill-down: given a run + an
+    engine, exactly which records that run processed, and how (created/updated/…).
+
+    A REFERENCE, not a copy — ``entity_table`` + ``entity_id`` join back to the
+    canonical row for display; ``detail`` holds only the run-specific facts a later
+    join can't recover (e.g. a lead's score at run time). ``run_id`` equals the
+    ``pipeline_executions.run_id`` (== ``pipeline_runs.pipeline_id``) that produced it,
+    so isolation is by construction: filtering on (run_id, engine) can never leak
+    another run's records."""
+
+    __tablename__ = "run_engine_records"
+    __table_args__ = (
+        Index("ix_rer_run_engine", "run_id", "engine"),
+        Index("ix_rer_run", "run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Soft link (text) — no FK at the ORM layer so SQLite review DBs and tests stay
+    # simple; the SQL migration adds the real FK + ON DELETE CASCADE on Postgres.
+    run_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    engine: Mapped[str] = mapped_column(String(40), nullable=False)
+    entity_table: Mapped[str] = mapped_column(String(60), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    operation: Mapped[str] = mapped_column(String(20), nullable=False)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

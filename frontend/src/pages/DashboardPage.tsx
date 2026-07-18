@@ -20,7 +20,9 @@ const ROW = "-mx-3.5 flex items-center gap-3 px-3.5 py-1.5 hover:bg-raised";
 
 export function DashboardPage() {
   const summary = useAnalyticsSummary();
-  const opps = useOpportunities({ page: 1, page_size: 6 });
+  // News feed only — leadership events are a first-class category shown separately
+  // (the "Recent leadership signals" panel below + the Leadership page).
+  const opps = useOpportunities({ page: 1, page_size: 6, signal_category: "NEWS" });
   const ldr = useLeadershipSignals({ page: 1, page_size: 6 });
   const alerts = useAlerts(10);
 

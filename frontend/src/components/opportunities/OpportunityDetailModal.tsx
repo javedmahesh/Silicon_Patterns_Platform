@@ -1,16 +1,36 @@
 import { useState } from "react";
-import { ExternalLink, GitMerge, Archive, RotateCcw, Ban, Tag, StickyNote } from "lucide-react";
+import { ExternalLink, GitMerge, Archive, Pencil, RotateCcw, Ban, Tag, StickyNote } from "lucide-react";
 
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { EditRecordModal, type EditField } from "@/components/ui/EditRecordModal";
 import { EmptyState, ErrorState } from "@/components/ui/EmptyState";
 import { Modal } from "@/components/ui/Modal";
 import { Spinner } from "@/components/ui/Spinner";
 import { toast } from "@/components/ui/Toast";
 import { apiErrorMessage } from "@/lib/api/client";
-import { useOpportunity, useOpportunityReview } from "@/lib/api/queries";
+import {
+  useDeleteOpportunity,
+  useOpportunity,
+  useOpportunityReview,
+  useUpdateOpportunity,
+} from "@/lib/api/queries";
+import { useAuth } from "@/lib/auth/store";
 import type { OpportunityDetailOut } from "@/lib/api/types";
 import { enumLabel, fmtDate, fmtRelative } from "@/lib/format";
+
+const OPP_FIELDS: EditField[] = [
+  { name: "article_title", label: "Title", full: true },
+  { name: "opportunity_type", label: "Type" },
+  { name: "published_date", label: "Published date" },
+  { name: "company_name", label: "Company" },
+  { name: "product_mentioned", label: "Product" },
+  { name: "technology_focus", label: "Technology focus" },
+  { name: "funding_stage", label: "Funding stage" },
+  { name: "funding_amount", label: "Funding amount" },
+  { name: "article_url", label: "Article URL", full: true },
+  { name: "summary", label: "Summary", kind: "textarea" },
+];
 
 type Tone = "neutral" | "accent" | "positive" | "warning" | "danger";
 const LIFECYCLE_TONE: Record<string, Tone> = {
@@ -61,8 +81,32 @@ export function OpportunityDetailModal({
 }) {
   const { data, isLoading, isError, error, refetch } = useOpportunity(opportunityId);
   const { review, setLifecycle } = useOpportunityReview();
+  const { isAdmin } = useAuth();
+  const del = useDeleteOpportunity();
+  const upd = useUpdateOpportunity();
   const [note, setNote] = useState("");
-  const busy = review.isPending || setLifecycle.isPending;
+  const [editing, setEditing] = useState(false);
+  const busy = review.isPending || setLifecycle.isPending || del.isPending;
+
+  function deleteOpp() {
+    if (!opportunityId) return;
+    del.mutate(opportunityId, {
+      onSuccess: () => { toast("Opportunity deleted", "positive"); onClose(); },
+      onError: (e) => toast(apiErrorMessage(e), "danger"),
+    });
+  }
+
+  function saveEdit(patch: Record<string, string>) {
+    if (!opportunityId) return;
+    if (Object.keys(patch).length === 0) return setEditing(false);
+    upd.mutate(
+      { id: opportunityId, body: patch },
+      {
+        onSuccess: () => { setEditing(false); toast("Opportunity updated", "positive"); },
+        onError: (e) => toast(apiErrorMessage(e), "danger"),
+      },
+    );
+  }
 
   function act(action: string, extra: Record<string, unknown> = {}) {
     if (!opportunityId) return;
@@ -87,6 +131,7 @@ export function OpportunityDetailModal({
   }
 
   return (
+    <>
     <Modal
       open={Boolean(opportunityId)}
       onClose={onClose}
@@ -108,14 +153,31 @@ export function OpportunityDetailModal({
           act={act}
           changeLifecycle={changeLifecycle}
           onOpenOther={onOpenOther}
+          isAdmin={isAdmin}
+          onDelete={deleteOpp}
+          onEdit={() => setEditing(true)}
         />
       )}
     </Modal>
+    {editing && data && (
+      <EditRecordModal
+        open
+        onClose={() => setEditing(false)}
+        title="Edit opportunity"
+        icon={<Pencil size={15} />}
+        fields={OPP_FIELDS}
+        initial={data as unknown as Record<string, unknown>}
+        pending={upd.isPending}
+        error={upd.isError ? upd.error : undefined}
+        onSubmit={saveEdit}
+      />
+    )}
+    </>
   );
 }
 
 function Detail({
-  data, note, setNote, busy, act, changeLifecycle, onOpenOther,
+  data, note, setNote, busy, act, changeLifecycle, onOpenOther, isAdmin, onDelete, onEdit,
 }: {
   data: OpportunityDetailOut;
   note: string;
@@ -124,6 +186,9 @@ function Detail({
   act: (action: string, extra?: Record<string, unknown>) => void;
   changeLifecycle: (next: string) => void;
   onOpenOther?: (id: string) => void;
+  isAdmin: boolean;
+  onDelete: () => void;
+  onEdit: () => void;
 }) {
   return (
     <div className="space-y-3.5">
@@ -313,7 +378,37 @@ function Detail({
           <ChangeType busy={busy} onApply={(t) => act("change_type", { new_type: t })} />
           <MergeInto busy={busy} onApply={(id) => act("merge", { target_opportunity_id: id })} />
         </div>
+        {/* Admin-only: permanently remove this Blog Crawler / news entry. */}
+        {isAdmin && (
+          <div className="mt-3 flex items-center gap-2 border-t border-line pt-3">
+            <Button size="sm" variant="default" disabled={busy} onClick={onEdit}>
+              <Pencil size={13} /> Edit
+            </Button>
+            <DeleteConfirm busy={busy} onDelete={onDelete} noun="opportunity" />
+          </div>
+        )}
       </Section>
+    </div>
+  );
+}
+
+/** Two-click confirm for a destructive delete (admin only). */
+function DeleteConfirm({ busy, onDelete, noun }: { busy: boolean; onDelete: () => void; noun: string }) {
+  const [confirming, setConfirming] = useState(false);
+  if (!confirming) {
+    return (
+      <Button size="sm" variant="danger" disabled={busy} onClick={() => setConfirming(true)}>
+        Delete {noun}
+      </Button>
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-12 text-danger">Permanently delete this {noun}? This can’t be undone.</span>
+      <Button size="sm" variant="danger" disabled={busy} onClick={onDelete}>
+        {busy ? <Spinner size={13} /> : null} Confirm delete
+      </Button>
+      <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>Cancel</Button>
     </div>
   );
 }

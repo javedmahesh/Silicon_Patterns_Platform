@@ -4,16 +4,17 @@ import { ChevronDown, ChevronRight, Mail, UserCog, Users } from "lucide-react";
 
 import { ContactDrawer } from "@/components/profile/ContactDrawer";
 import { DecisionMakerRow } from "@/components/profile/DecisionMakerRow";
-import { LeadershipSignalsSection } from "@/components/profile/LeadershipSignalsSection";
+import { RunDmIntelligenceModal } from "@/components/profile/RunDmIntelligenceModal";
+import { Pager } from "@/components/data/Pager";
 import { FilterBar } from "@/components/shell/FilterBar";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { CollapsibleSection } from "@/components/ui/CollapsibleSection";
 import { DebouncedInput } from "@/components/ui/DebouncedInput";
 import { EmptyState, ErrorState } from "@/components/ui/EmptyState";
 import { Spinner } from "@/components/ui/Spinner";
-import { useDecisionMakerCompanies, useDecisionMakers, useLeadershipSignals } from "@/lib/api/queries";
+import { useAuth } from "@/lib/auth/store";
+import { useDecisionMakerCompanies, useDecisionMakers } from "@/lib/api/queries";
 import type { DecisionMakerCompany, DecisionMakerOut } from "@/lib/api/types";
 import { fmtInt, monogram } from "@/lib/format";
 
@@ -97,12 +98,14 @@ function CompanyGroup({ company }: { company: DecisionMakerCompany }) {
   );
 }
 
+const PAGE_SIZE = 25;
+
 export function DecisionMakersPage() {
   const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [runOpen, setRunOpen] = useState(false);
+  const { isManager } = useAuth();
   const { data, isLoading, isError, error, refetch } = useDecisionMakerCompanies();
-  const { data: ldr, isLoading: ldrLoading } = useLeadershipSignals({ page_size: 50 });
-  const ldrItems = ldr?.items ?? [];
-  const ldrTotal = ldr?.total ?? 0;
 
   // The Decision Makers directory consists solely of actual decision makers (CxO /
   // founder / VP / director) — the people the team reaches out to. Companies whose
@@ -120,6 +123,15 @@ export function DecisionMakersPage() {
       )
     : decisionMakerCompanies;
 
+  // Paginate the (client-side) company directory into pages instead of one long scroll.
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, pages);
+  const pageItems = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  const onFilter = (v: string) => {
+    setQ(v);
+    setPage(1); // a new filter resets to the first page
+  };
+
   return (
     <>
       <PageHeader
@@ -129,38 +141,27 @@ export function DecisionMakersPage() {
             ? `${fmtInt(decisionMakerCompanies.length)} companies · ${fmtInt(totalDecisionMakers)} decision makers (CxO / founder / VP / director)`
             : "Decision makers (CxO / founder / VP / director) resolved to each company — the people to reach out to"
         }
+        actions={
+          // Running the paid Apify engine is a management action — manager+ only
+          // (RBAC), mirroring the backend require_manager gate on the endpoint.
+          isManager ? (
+            <Button variant="primary" size="sm" onClick={() => setRunOpen(true)}>
+              <UserCog size={14} /> Run Decision Maker Intelligence
+            </Button>
+          ) : undefined
+        }
       >
-        <FilterBar activeCount={needle ? 1 : 0} onClear={() => setQ("")}>
+        <FilterBar activeCount={needle ? 1 : 0} onClear={() => onFilter("")}>
           <DebouncedInput
             value={q}
-            onChange={setQ}
+            onChange={onFilter}
             placeholder="Filter companies…"
             className="w-64"
           />
         </FilterBar>
       </PageHeader>
 
-      <div className="p-4 space-y-4">
-        <CollapsibleSection
-          sessionKey="decision-makers-leadership"
-          title="Leadership Signals"
-          icon={<UserCog size={15} />}
-          count={ldrTotal}
-        >
-          {ldrLoading ? (
-            <div className="flex items-center gap-2 py-1 text-12 text-fg-subtle">
-              <Spinner size={14} /> Loading leadership signals…
-            </div>
-          ) : (
-            <LeadershipSignalsSection
-              signals={ldrItems}
-              groupByCompany
-              showCompany
-              emptyHint="No director-level+ moves detected yet — these surface as the LinkedIn Scraper sources executives and the Blog Crawler records leadership events."
-            />
-          )}
-        </CollapsibleSection>
-
+      <div className="p-4">
         <div className="panel">
           {isError ? (
             <ErrorState title="Couldn't load decision makers" error={error} onRetry={refetch} />
@@ -175,14 +176,27 @@ export function DecisionMakersPage() {
               description="Decision makers (CxO / founder / VP / director) are sourced and resolved to a company by the LinkedIn Scraper. Click a company to see who to reach out to."
             />
           ) : (
-            <div className="divide-y divide-line">
-              {filtered.map((c) => (
-                <CompanyGroup key={c.company_domain} company={c} />
-              ))}
-            </div>
+            <>
+              <div className="divide-y divide-line">
+                {pageItems.map((c) => (
+                  <CompanyGroup key={c.company_domain} company={c} />
+                ))}
+              </div>
+              <div className="border-t border-line px-2">
+                <Pager
+                  page={safePage}
+                  pages={pages}
+                  total={filtered.length}
+                  pageSize={PAGE_SIZE}
+                  onPage={setPage}
+                />
+              </div>
+            </>
           )}
         </div>
       </div>
+
+      <RunDmIntelligenceModal open={runOpen} onClose={() => setRunOpen(false)} />
     </>
   );
 }

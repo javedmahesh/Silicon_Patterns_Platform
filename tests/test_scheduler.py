@@ -224,6 +224,37 @@ def test_status_endpoint_reports_schedule(client):
     assert body["next_run"] is not None
 
 
+def test_update_config_persists_and_overrides_env(client):
+    # A saved override wins over the env default (fixture is scheduler_enabled=False).
+    r = client.put("/scheduler/config", headers=MGR,
+                   json={"schedule_times": ["7:5", "23:30", "07:05"], "enabled": True, "grace_minutes": 60})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["schedule_times"] == ["07:05", "23:30"]   # normalized + deduped + sorted
+    assert body["enabled"] is True and body["grace_minutes"] == 60
+    # persisted: a fresh status read reflects it, not the env default
+    st = client.get("/scheduler/status", headers=MGR).json()
+    assert st["schedule_times"] == ["07:05", "23:30"] and st["grace_minutes"] == 60 and st["enabled"] is True
+
+
+def test_update_config_rejects_bad_time(client):
+    r = client.put("/scheduler/config", headers=MGR,
+                   json={"schedule_times": ["25:00"], "enabled": True, "grace_minutes": 30})
+    assert r.status_code == 422
+
+
+def test_update_config_requires_manager(client):
+    body = {"schedule_times": ["09:00"], "enabled": True, "grace_minutes": 30}
+    assert client.put("/scheduler/config", headers={"X-Dev-Role": "member"}, json=body).status_code == 403
+    assert client.put("/scheduler/config", headers=MGR, json=body).status_code == 200
+
+
+def test_disable_via_config(client):
+    client.put("/scheduler/config", headers=MGR,
+               json={"schedule_times": ["09:00"], "enabled": False, "grace_minutes": 30})
+    assert client.get("/scheduler/status", headers=MGR).json()["enabled"] is False
+
+
 def test_run_history_lists_executions(client):
     with client.app.state.db.sessionmaker() as s:
         _seed_scorable(s)

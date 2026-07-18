@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from master_db.models import PipelineRun
+from orchestrator import provenance
 from orchestrator.runs import RunTracker
 from orchestrator.stages import PIPELINE_ORDER, STAGES, SkipStage, Stage
 
@@ -57,12 +58,17 @@ class Orchestrator:
         use_engine = self.run_engine and stage.engine is not None
         mode = "full" if use_engine else ("scoring" if name == "scoring" else "ingest")
         run = self.tracker.start(component=name, pipeline_id=pipeline_id, mode=mode, trigger=self.trigger)
+        # Per-run record provenance is scoped to grouped pipeline runs (a Standard Run
+        # or `run all` passes an explicit pipeline_id). Ad-hoc single-stage runs
+        # (pipeline_id="") don't surface in the Run History UI, so we skip capture.
+        recorder = provenance.begin_stage(self.session, pipeline_id, name) if pipeline_id else None
         notes = ""
         try:
             if use_engine:
                 ok, engine_note = self._run_engine(stage)
                 notes = engine_note
                 if not ok:
+                    provenance.detach(self.session)
                     self.tracker.finish(run, status="failed", errors=[engine_note], notes=notes)
                     return StageResult(name, "failed", duration_ms=run.duration_ms,
                                        errors=[engine_note], notes=notes)
@@ -79,6 +85,7 @@ class Orchestrator:
                 run, status=status, processed=metrics.rows_in, created=created,
                 updated=updated, review=metrics.rows_review, errors=metrics.errors, notes=notes,
             )
+            provenance.flush(self.session, recorder)   # only reached on the success path
             return StageResult(name, status, metrics.rows_in, created, updated,
                                metrics.rows_review, run.duration_ms, metrics.errors, notes)
 
@@ -87,9 +94,11 @@ class Orchestrator:
             return StageResult(name, "skipped", duration_ms=run.duration_ms, notes=str(exc))
         except Exception as exc:  # isolate stage failure
             logger.exception("stage %s failed", name)
-            self.session.rollback()
+            self.session.rollback()   # discards this stage's writes AND its buffered provenance
             self.tracker.finish(run, status="failed", errors=[str(exc)], notes="exception")
             return StageResult(name, "failed", duration_ms=run.duration_ms, errors=[str(exc)], notes=str(exc))
+        finally:
+            provenance.detach(self.session)
 
     def _invoke_ingest(self, stage: Stage):
         """Call stage.ingest(session), threading company_limit through only for the
@@ -121,8 +130,11 @@ class Orchestrator:
             proc = subprocess.run(
                 spec.cmd, cwd=str(spec.cwd), capture_output=True, text=True, timeout=spec.timeout,
             )
-        except FileNotFoundError:
-            return False, f"engine not found (cwd={spec.cwd})"
+        except OSError as exc:
+            # covers a missing engine (FileNotFoundError) and an unusable working
+            # directory (WinError 267 / NotADirectoryError) — both are OSError. Turn
+            # them into a clean stage failure instead of an unhandled exception.
+            return False, f"engine launch failed (cwd={spec.cwd}): {exc}"
         except subprocess.TimeoutExpired:
             return False, f"engine timed out after {spec.timeout}s"
         if proc.returncode == 0:

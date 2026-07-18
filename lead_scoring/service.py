@@ -99,6 +99,31 @@ class ScoringSummary:
     top: list[tuple] = field(default_factory=list)  # (domain, name, score, grade, subscores)
 
 
+def _record_scoring_provenance(session: Session, rowdicts: list[dict]) -> None:
+    """Emit a provenance row per company scored this run, carrying prev/new score +
+    grade + changed flag (facts a later join to the mutated lead_scores can't recover).
+    Cheap no-op when no Standard Run attached a recorder to this session."""
+    from orchestrator import provenance
+
+    if session.info.get("run_provenance") is None:
+        return
+    prior = {
+        d: (s, g) for d, s, g in session.execute(
+            select(LeadScore.company_domain, LeadScore.lead_score, LeadScore.grade)
+        ).all()
+    }
+    for r in rowdicts:
+        was = prior.get(r["company_domain"])
+        new_score, new_grade = r["lead_score"], r["grade"]
+        provenance.record(session, "lead_scores", r["company_domain"], "scored", {
+            "prev_score": round(was[0], 2) if was else None,
+            "prev_grade": was[1] if was else None,
+            "new_score": round(new_score, 2),
+            "grade": new_grade,
+            "changed": bool(was is None or abs((was[0] or 0) - new_score) >= 0.01 or was[1] != new_grade),
+        })
+
+
 def score_all(session: Session, cfg: ScoringConfig | None = None) -> ScoringSummary:
     cfg = cfg or ScoringConfig.load()
     scored = [(inp, score_company(inp, cfg)) for inp in gather_inputs(session)]
@@ -148,6 +173,10 @@ def score_all(session: Session, cfg: ScoringConfig | None = None) -> ScoringSumm
             missing_counts[mi] = missing_counts.get(mi, 0) + 1
         if not res.missing:
             full += 1
+    # Per-run provenance: snapshot each company's prior score BEFORE the bulk write,
+    # so the Run Details drill-down can honestly show previous->new (and whether it
+    # changed) for exactly this run. No-op outside a Standard Run.
+    _record_scoring_provenance(session, rowdicts)
     # One bulk upsert instead of a per-company SELECT+write loop.
     bulk_upsert(session, LeadScore, rowdicts, ["company_domain"])
     session.commit()

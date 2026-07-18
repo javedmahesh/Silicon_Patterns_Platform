@@ -41,6 +41,131 @@ class CompanySummary(_ORM):
     grade: str | None = None
 
 
+class CompanyCreate(BaseModel):
+    """Manually add a company to the universe (name + domain required; the rest
+    optional). The domain is normalized and name_key / canonical id are derived
+    server-side — see backend/services.py::create_company."""
+
+    company_name: str
+    company_domain: str
+    country: str = ""
+    website: str = ""
+    industry_category: str = ""
+
+
+class ImportUploadIn(BaseModel):
+    """Upload a historical Excel export as base64 (Phase 6). Avoids a multipart
+    dependency; the backend decodes, reconciles, and records a previewed ImportJob."""
+
+    filename: str
+    content_base64: str
+
+
+class CompanyUpdate(BaseModel):
+    """Admin edit of a company's descriptive fields (partial; only sent fields apply).
+    Derived keys (name_key / canonical_company_id) are recomputed server-side when the
+    name changes; PK, scores and timestamps are never editable."""
+
+    company_name: str | None = None
+    website: str | None = None
+    company_linkedin: str | None = None
+    country: str | None = None
+    city: str | None = None
+    headquarters: str | None = None
+    industry_category: str | None = None
+    sub_category: str | None = None
+    technology_focus: str | None = None
+    company_type: str | None = None
+    description: str | None = None
+    founded_year: str | None = None
+    prospect_type: str | None = None
+    company_tier: str | None = None
+    compliance_flag: str | None = None
+    company_status: str | None = None
+
+
+class DecisionMakerUpdate(BaseModel):
+    """Admin edit of a decision maker's fields (partial). The LinkedIn URL identity key,
+    match/agent scores, and profile_data are never editable here."""
+
+    first_name: str | None = None
+    last_name: str | None = None
+    full_name: str | None = None
+    current_title: str | None = None
+    seniority: str | None = None
+    functional_area: str | None = None
+    work_email: str | None = None
+    work_phone: str | None = None
+    city: str | None = None
+    state_region: str | None = None
+    country: str | None = None
+    headline: str | None = None
+    location: str | None = None
+    organization_website: str | None = None
+    organization_linkedin: str | None = None
+    status: str | None = None
+
+
+class OpportunityUpdate(BaseModel):
+    """Admin edit of an opportunity's fields (partial). Scores + signal_category (derived
+    from opportunity_type) are not directly editable."""
+
+    article_title: str | None = None
+    article_url: str | None = None
+    summary: str | None = None
+    opportunity_type: str | None = None
+    published_date: str | None = None
+    company_name: str | None = None
+    product_mentioned: str | None = None
+    technology_focus: str | None = None
+    funding_stage: str | None = None
+    funding_amount: str | None = None
+    validation_status: str | None = None
+
+
+class LeadershipSignalUpdate(BaseModel):
+    """Admin edit of a person-level leadership signal (partial)."""
+
+    person_name: str | None = None
+    from_title: str | None = None
+    to_title: str | None = None
+    movement_type: str | None = None
+    seniority_band: str | None = None
+    role_function: str | None = None
+    effective_date: str | None = None
+    confidence: str | None = None
+    company_name: str | None = None
+    linkedin_url: str | None = None
+    summary: str | None = None
+
+
+class ReviewDecisionIn(BaseModel):
+    """Approve / reject / skip one reviewable import record (Phase 5)."""
+
+    kind: str                         # "company" | "decision_maker"
+    source_ref: str
+    decision: str                     # "approve" | "reject" | "skip"
+    reason: str = ""
+
+
+class ReviewFieldResolveIn(BaseModel):
+    """Resolve one field of an update/conflict record."""
+
+    kind: str
+    source_ref: str
+    field: str
+    choice: str                       # "keep_platform" | "accept_historical"
+    reason: str = ""
+
+
+class ReviewBulkIn(BaseModel):
+    """Bulk approve/reject: all, by selection, or by category."""
+
+    action: str                       # approve_all|reject_all|approve_selected|reject_selected|approve_category|reject_category
+    refs: list[dict] | None = None    # [{"kind","source_ref"}] for *_selected
+    category: str | None = None       # for *_category
+
+
 class CompanyOut(_ORM):
     company_domain: str
     canonical_company_id: str
@@ -73,6 +198,7 @@ class OpportunityOut(_ORM):
     opportunity_type: str = ""
     opportunity_subtype: str = ""
     opportunity_category: str = ""
+    signal_category: str = "NEWS"   # first-class LEADERSHIP | NEWS grouping
     opportunity_score: int = 0
     effective_opportunity_score: int = 0
     confidence_score: int = 0
@@ -100,6 +226,11 @@ class OpportunityOut(_ORM):
     @classmethod
     def _str_or_empty(cls, v):   # NULL on pre-migration rows (columns added by the self-heal)
         return v or ""
+
+    @field_validator("signal_category", mode="before")
+    @classmethod
+    def _category_or_news(cls, v):   # NULL on pre-backfill rows -> default NEWS
+        return v or "NEWS"
 
     @field_validator("lifecycle_status", mode="before")
     @classmethod
@@ -485,6 +616,50 @@ class DecisionMakerCompanies(BaseModel):
     unresolved: int = 0
 
 
+# ------------------------- manual Decision Maker Intelligence jobs -----------
+class DmIntelligenceRunItemIn(BaseModel):
+    """One company to scrape, with its own requested decision-maker count."""
+
+    company_domain: str
+    requested_count: int = 25
+
+
+class DmIntelligenceRunIn(BaseModel):
+    """Request to run Decision Maker Intelligence for one-or-many companies, each
+    with its own requested count."""
+
+    items: list[DmIntelligenceRunItemIn]
+
+
+class DmIntelligenceJobItemOut(_ORM):
+    id: int
+    company_domain: str = ""
+    company_name: str = ""
+    requested_count: int = 0
+    status: str = "queued"          # queued | running | completed | failed
+    records_found: int = 0
+    apify_run_id: str | None = None
+    error: str = ""
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_ms: int = 0
+
+
+class DmIntelligenceJobOut(_ORM):
+    id: int
+    status: str = "queued"          # queued | running | completed | partial | failed
+    requested_by_email: str = ""
+    total_companies: int = 0
+    total_requested: int = 0
+    total_found: int = 0
+    error: str = ""
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_ms: int = 0
+    items: list[DmIntelligenceJobItemOut] = []
+
+
 class ContactIn(BaseModel):
     """Professional contact details only — work email / phone. No personal data."""
 
@@ -763,6 +938,8 @@ class AnalyticsSummary(BaseModel):
     total_decision_makers: int
     total_leads: int
     grade_distribution: dict[str, int]
+    # Opportunities split by first-class signal category: {"LEADERSHIP": n, "NEWS": m}.
+    signal_category_counts: dict[str, int] = {}
     top_companies: list[LeadOut]
 
 
@@ -4171,6 +4348,15 @@ class ExecutionOut(_ORM):
     created_at: datetime | None = None
 
 
+class SchedulerConfigIn(BaseModel):
+    """Update the Standard Run schedule from the UI. Times are HH:MM (24-hour),
+    server-local; validated + de-duped server-side."""
+
+    schedule_times: list[str]
+    enabled: bool = True
+    grace_minutes: int = 180
+
+
 class SchedulerStatusOut(BaseModel):
     enabled: bool
     running: bool
@@ -4188,6 +4374,38 @@ class RunNowResult(BaseModel):
     status: str          # accepted | busy
     detail: str = ""
     run_id: str | None = None
+
+
+class RunRecordField(BaseModel):
+    """One display column of a drill-down record (label + already-stringified value)."""
+
+    label: str
+    value: str
+
+
+class RunEngineRecordOut(BaseModel):
+    """One canonical record a run's engine touched, projected for display."""
+
+    entity_id: str
+    entity_table: str
+    operation: str                       # created | updated | existing | derived | scored | …
+    title: str = ""
+    subtitle: str = ""
+    fields: list[RunRecordField] = []
+    link: str | None = None              # in-app route to the canonical record, if any
+    url: str = ""                        # external source URL (articles / job postings)
+    detail: dict = {}                    # run-specific facts captured at write time
+
+
+class RunEngineRecordsOut(BaseModel):
+    """A page of one engine's records for one run + the full operation breakdown."""
+
+    run_id: str
+    engine: str
+    available: bool = True               # False => historical run with no provenance
+    total: int = 0
+    breakdown: dict[str, int] = {}       # operation -> count (whole run/engine, not just page)
+    items: list[RunEngineRecordOut] = []
 
 
 # Resolve forward references now that the referenced models are all defined.

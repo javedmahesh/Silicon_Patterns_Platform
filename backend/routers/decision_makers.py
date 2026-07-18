@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from backend import company_intelligence as cintel
+from backend import dm_intelligence_jobs as dm_jobs
 from backend import relationship_intelligence as reli
 from backend import services
 from backend.dependencies import Pagination, get_session, pagination
@@ -19,9 +20,12 @@ from backend.schemas import (
     DecisionMakerNoteOut,
     DecisionMakerNoteUpdate,
     DecisionMakerOut,
+    DecisionMakerUpdate,
+    DmIntelligenceJobOut,
+    DmIntelligenceRunIn,
     Page,
 )
-from backend.security import get_current_user, require_manager
+from backend.security import get_current_user, require_admin, require_manager
 from master_db.models import User
 
 router = APIRouter(prefix="/decision-makers", tags=["decision-makers"])
@@ -44,6 +48,48 @@ def list_decision_makers(
     return services.list_decision_makers(
         session, pagination=page, company_domain=company_domain, seniority=seniority, senior=senior
     )
+
+
+# --------------------- manual Decision Maker Intelligence (paid Apify) --------
+# Declared BEFORE the dynamic /{dm_id} route so these static paths win. Running the
+# engine is a management action (it costs money): manager+ only (RBAC), matching the
+# frontend gate. Reads are open to any authenticated user so progress can be watched.
+@router.post("/intelligence-runs", response_model=DmIntelligenceJobOut,
+             status_code=status.HTTP_201_CREATED,
+             summary="Run Decision Maker Intelligence for one-or-many companies "
+                     "(each with its own count) — manager+ only")
+def run_decision_maker_intelligence(
+    body: DmIntelligenceRunIn,
+    request: Request,
+    session: Session = Depends(get_session),
+    actor: User = Depends(require_manager),
+):
+    try:
+        job = dm_jobs.create_job(
+            session, items=body.items, requested_by_id=actor.id, requested_by_email=actor.email,
+        )
+    except dm_jobs.JobValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+    # Execute on a background thread; the request returns the queued job immediately.
+    dm_jobs.start_job_async(request.app, job.id)
+    return DmIntelligenceJobOut.model_validate(job)
+
+
+@router.get("/intelligence-runs", response_model=list[DmIntelligenceJobOut],
+            summary="Recent Decision Maker Intelligence jobs (manual-run history)")
+def list_intelligence_runs(session: Session = Depends(get_session),
+                           _: User = Depends(get_current_user)):
+    return [DmIntelligenceJobOut.model_validate(j) for j in dm_jobs.list_jobs(session, limit=20)]
+
+
+@router.get("/intelligence-runs/{job_id}", response_model=DmIntelligenceJobOut,
+            summary="One Decision Maker Intelligence job with live per-company progress")
+def get_intelligence_run(job_id: int, session: Session = Depends(get_session),
+                         _: User = Depends(get_current_user)):
+    job = dm_jobs.get_job(session, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
+    return DmIntelligenceJobOut.model_validate(job)
 
 
 @router.get("/company/{domain}", response_model=CompanyContactsOut,
@@ -74,6 +120,20 @@ def company_relationships(domain: str, session: Session = Depends(get_session),
 def get_decision_maker(dm_id: int, session: Session = Depends(get_session),
                        _: User = Depends(get_current_user)):
     return services.get_decision_maker_detail(session, dm_id)
+
+
+@router.patch("/{dm_id}", response_model=DecisionMakerOut,
+              summary="Edit a decision maker's fields (admin only)")
+def update_decision_maker(dm_id: int, body: DecisionMakerUpdate,
+                          session: Session = Depends(get_session), _: User = Depends(require_admin)):
+    return services.update_decision_maker(session, dm_id, body.model_dump(exclude_unset=True))
+
+
+@router.delete("/{dm_id}", status_code=status.HTTP_204_NO_CONTENT,
+               summary="Permanently delete a decision maker (admin only)")
+def delete_decision_maker(dm_id: int, session: Session = Depends(get_session),
+                          _: User = Depends(require_admin)):
+    services.delete_decision_maker(session, dm_id)
 
 
 @router.get("/{dm_id}/contact", response_model=ContactOut | None,

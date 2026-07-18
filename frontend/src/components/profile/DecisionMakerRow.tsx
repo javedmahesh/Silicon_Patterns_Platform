@@ -1,10 +1,97 @@
-import type { ReactNode } from "react";
-import { ExternalLink } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ExternalLink, Pencil } from "lucide-react";
 
 import { NumericCell } from "@/components/data/NumericCell";
 import { Badge } from "@/components/ui/Badge";
+import { EditRecordModal, type EditField } from "@/components/ui/EditRecordModal";
+import { toast } from "@/components/ui/Toast";
+import { apiErrorMessage } from "@/lib/api/client";
+import { useDeleteDecisionMaker, useUpdateDecisionMaker } from "@/lib/api/queries";
+import { useAuth } from "@/lib/auth/store";
 import { cleanLocation, enumLabel, fmtScore, fullName } from "@/lib/format";
 import type { DecisionMakerOut } from "@/lib/api/types";
+
+const DM_FIELDS: EditField[] = [
+  { name: "first_name", label: "First name" },
+  { name: "last_name", label: "Last name" },
+  { name: "full_name", label: "Full name" },
+  { name: "current_title", label: "Title" },
+  { name: "seniority", label: "Seniority" },
+  { name: "functional_area", label: "Function" },
+  { name: "work_email", label: "Work email" },
+  { name: "work_phone", label: "Work phone" },
+  { name: "city", label: "City" },
+  { name: "state_region", label: "State / Region" },
+  { name: "country", label: "Country" },
+  { name: "location", label: "Location" },
+  { name: "headline", label: "Headline", full: true },
+  { name: "organization_website", label: "Org website" },
+  { name: "organization_linkedin", label: "Org LinkedIn" },
+];
+
+/** Admin-only inline edit + delete for one decision maker (self-contained so it works
+ *  on every surface that renders a DM row). Renders nothing for non-admins. */
+function DmAdminActions({ dm }: { dm: DecisionMakerOut }) {
+  const { isAdmin } = useAuth();
+  const [editing, setEditing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const upd = useUpdateDecisionMaker();
+  const del = useDeleteDecisionMaker();
+  if (!isAdmin) return null;
+
+  const save = (patch: Record<string, string>) => {
+    if (Object.keys(patch).length === 0) return setEditing(false);
+    upd.mutate(
+      { id: dm.id, body: patch },
+      {
+        onSuccess: () => { setEditing(false); toast("Decision maker updated", "positive"); },
+        onError: (e) => toast(apiErrorMessage(e), "danger"),
+      },
+    );
+  };
+  const remove = () =>
+    del.mutate(dm.id, {
+      onSuccess: () => toast("Decision maker deleted", "positive"),
+      onError: (e) => { setConfirming(false); toast(apiErrorMessage(e), "danger"); },
+    });
+
+  return (
+    <>
+      {confirming ? (
+        <span className="inline-flex shrink-0 items-center gap-1.5 text-11">
+          <button type="button" onClick={remove} className="text-danger hover:underline">Confirm</button>
+          <button type="button" onClick={() => setConfirming(false)} className="text-fg-subtle hover:underline">
+            Cancel
+          </button>
+        </span>
+      ) : (
+        <span className="inline-flex shrink-0 items-center gap-2">
+          <button type="button" onClick={() => setEditing(true)}
+                  className="text-fg-subtle hover:text-accent" title="Edit decision maker (admin)">
+            <Pencil size={13} />
+          </button>
+          <button type="button" onClick={() => setConfirming(true)}
+                  className="text-11 text-fg-subtle hover:text-danger" title="Delete decision maker (admin)">
+            Delete
+          </button>
+        </span>
+      )}
+      {editing && (
+        <EditRecordModal
+          open
+          onClose={() => setEditing(false)}
+          title={`Edit ${fullName(dm.first_name, dm.last_name)}`}
+          icon={<Pencil size={15} />}
+          fields={DM_FIELDS}
+          initial={dm as unknown as Record<string, unknown>}
+          pending={upd.isPending}
+          error={upd.isError ? upd.error : undefined}
+          onSubmit={save}
+        />
+      )}
+    </>
+  );
+}
 
 export function DecisionMakerRow({
   dm,
@@ -58,6 +145,7 @@ export function DecisionMakerRow({
         </a>
       )}
       {action}
+      <DmAdminActions dm={dm} />
     </div>
   );
 }

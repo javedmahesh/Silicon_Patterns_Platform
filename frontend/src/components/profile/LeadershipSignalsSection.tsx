@@ -25,12 +25,18 @@ export function LeadershipSignalsSection({
   groupByCompany = false,
   showCompany = false,
   emptyHint,
+  onDelete,
+  onEdit,
 }: {
   signals: LeadershipSignalOut[];
   /** Group rows under a per-company header (for the cross-company directory feed). */
   groupByCompany?: boolean;
   showCompany?: boolean;
   emptyHint?: string;
+  /** Admin-provided: enables a per-row delete control. */
+  onDelete?: (signalId: string) => void;
+  /** Admin-provided: enables a per-row edit control. */
+  onEdit?: (sig: LeadershipSignalOut) => void;
 }) {
   if (signals.length === 0) {
     return (
@@ -49,7 +55,7 @@ export function LeadershipSignalsSection({
     return (
       <div className="divide-y divide-line">
         {signals.map((s) => (
-          <LeadershipSignalRow key={s.signal_id} sig={s} showCompany={showCompany} />
+          <LeadershipSignalRow key={s.signal_id} sig={s} showCompany={showCompany} onDelete={onDelete} onEdit={onEdit} />
         ))}
       </div>
     );
@@ -65,7 +71,7 @@ export function LeadershipSignalsSection({
           </div>
           <div className="divide-y divide-line">
             {items.map((s) => (
-              <LeadershipSignalRow key={s.signal_id} sig={s} showCompany={false} />
+              <LeadershipSignalRow key={s.signal_id} sig={s} showCompany={false} onDelete={onDelete} onEdit={onEdit} />
             ))}
           </div>
         </div>

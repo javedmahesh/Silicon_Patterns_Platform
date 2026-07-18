@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { ExternalLink } from "lucide-react";
 
 import { ConfidenceBadge } from "@/components/data/ConfidenceBadge";
@@ -32,14 +33,21 @@ export function ageLabel(days: number): string {
   return `${years % 1 === 0 ? years : years.toFixed(1)}y ago`;
 }
 
-/** One person-level director+ leadership-movement signal. */
+/** One person-level director+ leadership-movement signal.
+ *  ``onDelete`` (admin-provided) renders an inline delete control with a confirm. */
 export function LeadershipSignalRow({
   sig,
   showCompany = false,
+  onDelete,
+  onEdit,
 }: {
   sig: LeadershipSignalOut;
   showCompany?: boolean;
+  onDelete?: (signalId: string) => void;
+  /** Admin-provided: opens the edit form for this signal. */
+  onEdit?: (sig: LeadershipSignalOut) => void;
 }) {
+  const [confirming, setConfirming] = useState(false);
   const age = ageLabel(sig.event_age_days);
   const meta = [
     sig.from_title ? `was ${sig.from_title}` : "",
@@ -66,17 +74,49 @@ export function LeadershipSignalRow({
           <div className="mt-0.5 truncate text-11 text-fg-subtle">{meta.join(" · ")}</div>
         )}
       </div>
-      {sig.linkedin_url && (
-        <a
-          href={sig.linkedin_url}
-          target="_blank"
-          rel="noreferrer"
-          className="shrink-0 text-fg-subtle hover:text-accent"
-          title="Open LinkedIn profile"
-        >
-          <ExternalLink size={14} />
-        </a>
-      )}
+      <div className="flex shrink-0 items-center gap-2">
+        {sig.linkedin_url && (
+          <a
+            href={sig.linkedin_url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-fg-subtle hover:text-accent"
+            title="Open LinkedIn profile"
+          >
+            <ExternalLink size={14} />
+          </a>
+        )}
+        {onEdit && !confirming && (
+          <button
+            type="button"
+            onClick={() => onEdit(sig)}
+            className="text-11 text-fg-subtle hover:text-accent"
+            title="Edit this signal (admin)"
+          >
+            Edit
+          </button>
+        )}
+        {onDelete &&
+          (confirming ? (
+            <span className="inline-flex items-center gap-1.5 text-11">
+              <button type="button" onClick={() => onDelete(sig.signal_id)} className="text-danger hover:underline">
+                Confirm
+              </button>
+              <button type="button" onClick={() => setConfirming(false)} className="text-fg-subtle hover:underline">
+                Cancel
+              </button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirming(true)}
+              className="text-11 text-fg-subtle hover:text-danger"
+              title="Delete this signal (admin)"
+            >
+              Delete
+            </button>
+          ))}
+      </div>
     </div>
   );
 }

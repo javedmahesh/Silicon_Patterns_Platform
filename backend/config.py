@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     default_page_size: int = 25
     max_page_size: int = 200
 
+    # Server-side location of the uploaded historical export the sync-preview endpoint
+    # reconciles (Phase 2). Empty by default; the Phase-3 import UI will replace this
+    # with a real per-request upload. Bound from SP_HISTORICAL_IMPORT_PATH.
+    historical_import_path: str = Field(
+        "", validation_alias=AliasChoices("SP_HISTORICAL_IMPORT_PATH")
+    )
+
     # Analytics responses are cached (ETag + in-process memo) and only change when a
     # refresh completes (twice daily), so this Cache-Control max-age can be generous.
     # 0 = revalidate every request (still cheap — a 304 when data is unchanged).
