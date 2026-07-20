@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.orm import Session
 
-from config.enums import LEADERSHIP_OPPORTUNITY_TYPES
+from config.enums import LEADERSHIP_OPPORTUNITY_TYPES, PROJECT_OPPORTUNITY_TYPES
 
 from master_db.models import (
     Company,
@@ -206,6 +206,7 @@ def list_leads(session: Session, *, grade=None, tier=None, prospect_type=None,
 _COMPANY_NEWS_TYPES = ("EXECUTIVE_HIRE", "LEADERSHIP_CHANGE", "ROLE_CHANGE", "COMPANY_NEWS")
 # The opportunity_types that make up the first-class LEADERSHIP signal category.
 _LEADERSHIP_TYPES = LEADERSHIP_OPPORTUNITY_TYPES
+_PROJECT_TYPES = PROJECT_OPPORTUNITY_TYPES
 
 
 # published_date is normalized to ISO YYYY-MM-DD on write (master_db.models), so a
@@ -230,13 +231,17 @@ def list_opportunities(session: Session, *, opportunity_type=None, company_domai
     if company_news_only:
         filters.append(Opportunity.opportunity_type.in_(_COMPANY_NEWS_TYPES))
     if signal_category:
-        # First-class LEADERSHIP | NEWS split (leadership people-movement events are
-        # kept out of the NEWS feed). Robust to un-backfilled rows on SQLite/self-heal
-        # by classifying on opportunity_type rather than trusting the stored column.
-        if signal_category.upper() == "LEADERSHIP":
+        # First-class LEADERSHIP | PROJECT | NEWS split (leadership people-movement AND
+        # structured semiconductor-project events are each kept out of the general NEWS
+        # feed). Robust to un-backfilled rows on SQLite/self-heal by classifying on
+        # opportunity_type rather than trusting the stored column.
+        cat = signal_category.upper()
+        if cat == "LEADERSHIP":
             filters.append(Opportunity.opportunity_type.in_(_LEADERSHIP_TYPES))
+        elif cat == "PROJECT":
+            filters.append(Opportunity.opportunity_type.in_(_PROJECT_TYPES))
         else:
-            filters.append(Opportunity.opportunity_type.notin_(_LEADERSHIP_TYPES))
+            filters.append(Opportunity.opportunity_type.notin_(tuple(_LEADERSHIP_TYPES) + tuple(_PROJECT_TYPES)))
     if opportunity_type:
         filters.append(Opportunity.opportunity_type == opportunity_type)
     if company_domain:
@@ -646,7 +651,7 @@ def grade_distribution(session: Session) -> dict[str, int]:
 
 
 def signal_category_counts(session: Session) -> dict[str, int]:
-    """Opportunity counts per first-class signal category (LEADERSHIP vs NEWS).
+    """Opportunity counts per first-class signal category (LEADERSHIP | PROJECT | NEWS).
 
     Classifies on opportunity_type (not the stored signal_category column) so the
     split is correct even on a fresh SQLite/self-heal DB where the 0047 backfill
@@ -655,8 +660,13 @@ def signal_category_counts(session: Session) -> dict[str, int]:
         select(func.count()).select_from(Opportunity)
         .where(Opportunity.opportunity_type.in_(_LEADERSHIP_TYPES))
     ) or 0
+    project = session.scalar(
+        select(func.count()).select_from(Opportunity)
+        .where(Opportunity.opportunity_type.in_(_PROJECT_TYPES))
+    ) or 0
     total = session.scalar(select(func.count()).select_from(Opportunity)) or 0
-    return {"LEADERSHIP": int(leadership), "NEWS": int(total) - int(leadership)}
+    return {"LEADERSHIP": int(leadership), "PROJECT": int(project),
+            "NEWS": int(total) - int(leadership) - int(project)}
 
 
 def top_leads(session: Session, limit: int = 10):

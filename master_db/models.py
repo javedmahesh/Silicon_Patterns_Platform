@@ -93,6 +93,7 @@ from config.enums import (
     LEAD_GRADES,
     LEAD_REVIEW_STATUSES,
     LEADERSHIP_MOVEMENT_TYPES,
+    LEADERSHIP_PRIORITY_TIERS,
     LEADERSHIP_SENIORITY_BANDS,
     LEADERSHIP_SIGNAL_SOURCES,
     MATCH_TYPES,
@@ -337,6 +338,8 @@ class Opportunity(Base):
         Index("ix_opportunities_validation", "validation_status"),
         Index("ix_opportunities_eff_score", "effective_opportunity_score"),
         Index("ix_opportunities_signal_category", "signal_category"),
+        Index("ix_opportunities_priority", "priority_tier"),
+        CheckConstraint(_in("priority_tier", LEADERSHIP_PRIORITY_TIERS), name="ck_opp_priority_tier"),
     )
 
     opportunity_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -417,6 +420,12 @@ class Opportunity(Base):
     normalized_title: Mapped[str] = mapped_column(String(512), default="")
     entity_fingerprint: Mapped[str] = mapped_column(String(64), default="")
     related_group_id: Mapped[str] = mapped_column(String(64), default="")
+    # New Project Intelligence (migration 0055): article-derived location (India-city
+    # aware, "" when none) and buying-intent priority tier for PROJECT_INTEL rows
+    # (integration/news/project_intel.py). Additive/defaulted — every existing row and
+    # every non-project opportunity is unaffected (priority_tier stays 'medium').
+    geography: Mapped[str] = mapped_column(String(120), default="")
+    priority_tier: Mapped[str] = mapped_column(String(10), default="medium")
 
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
@@ -1205,11 +1214,13 @@ class LeadershipSignal(Base):
         CheckConstraint(_in("seniority_band", LEADERSHIP_SENIORITY_BANDS), name="ck_ldr_band"),
         CheckConstraint(_in("source", LEADERSHIP_SIGNAL_SOURCES), name="ck_ldr_source"),
         CheckConstraint(_in("confidence", CONFIDENCE_LEVELS), name="ck_ldr_confidence"),
+        CheckConstraint(_in("priority_tier", LEADERSHIP_PRIORITY_TIERS), name="ck_ldr_priority"),
         Index("ix_ldr_domain", "company_domain"),
         Index("ix_ldr_movement", "movement_type"),
         Index("ix_ldr_band", "seniority_band"),
         Index("ix_ldr_source", "source"),
         Index("ix_ldr_effective", "effective_date"),
+        Index("ix_ldr_priority", "priority_tier"),
     )
 
     signal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -1233,6 +1244,12 @@ class LeadershipSignal(Base):
     source: Mapped[str] = mapped_column(String(20), default="linkedin_history")
     source_ref: Mapped[str] = mapped_column(String(1024), default="")
     summary: Mapped[str] = mapped_column(Text, default="")
+    # News phase 2 additions (migration 0054): a text-derived location signal (India-city
+    # aware; "" when nothing recognizable) and the reusable priority tier it (plus company
+    # tier) drive — see leadership_signals/priority.py. Additive; every existing feeder
+    # still works, defaulting to geography="" / priority_tier="medium".
+    geography: Mapped[str] = mapped_column(String(120), default="")
+    priority_tier: Mapped[str] = mapped_column(String(10), default="medium")
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

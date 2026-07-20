@@ -25,8 +25,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from integration.normalizer import name_key
+from leadership_signals.priority import extract_geography, priority_tier
 from leadership_signals.seniority import classify_seniority, rank
 from master_db.models import Company, CompanyAlias, DecisionMaker, DecisionMakerSnapshot, LeadershipSignal, Opportunity
+from sync.dm_sync import PlatformDecisionMakerIndex
+from sync.normalization import norm_person_name, norm_title
 
 DEFAULT_WINDOW_MONTHS = 36   # "recent leadership movement" horizon; configurable via the driver
 _RESHUFFLE_WINDOW_MONTHS = 6
@@ -289,16 +292,28 @@ _ROLE = r"([A-Za-z][\w /&-]{2,40})"
 _LEAD_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(rf"\bappoints?\s+{_PERSON}\s+as\s+(?:its\s+|the\s+|new\s+|interim\s+)*{_ROLE}"), "new_executive_hire"),
     (re.compile(rf"\bnames?\s+{_PERSON}\s+as\s+(?:its\s+|the\s+|new\s+)*{_ROLE}"), "new_executive_hire"),
+    (re.compile(rf"\bhires?\s+{_PERSON}\s+as\s+(?:its\s+|the\s+|new\s+)*{_ROLE}"), "new_executive_hire"),
+    (re.compile(rf"{_PERSON}\s+(?:is\s+)?hired\s+as\s+(?:the\s+|its\s+|new\s+)*{_ROLE}"), "new_executive_hire"),
     (re.compile(rf"{_PERSON}\s+joins\b[^.]*?\bas\s+(?:the\s+|its\s+|new\s+)*{_ROLE}"), "new_executive_hire"),
+    (re.compile(rf"{_PERSON}\s+(?:moves|moved|jumps)\s+(?:from\s+[\w\s&.,-]+?\s+)?to\s+[\w\s&.,-]+?\s+as\s+"
+                rf"(?:the\s+|its\s+|new\s+)*{_ROLE}"), "new_executive_hire"),
     (re.compile(rf"{_PERSON}\s+(?:is\s+)?promoted\s+to\s+{_ROLE}"), "promotion"),
     (re.compile(rf"\bpromotes?\s+{_PERSON}\s+to\s+{_ROLE}"), "promotion"),
     (re.compile(rf"{_PERSON}\s+(?:steps down|departs|resigns|to step down)(?:\s+as\s+{_ROLE})?"), "executive_departure"),
     (re.compile(rf"\b(?:appoints?|names?|elects?)\s+{_PERSON}\s+to\s+(?:its|the)\s+board\b"), "board_appointment"),
 ]
+# Roles extracted from free text can trail into geography/time ("VP Engineering in
+# Bengaluru", "CTO effective March") — strip that so the title stays clean; the
+# location is captured separately via extract_geography() on the full article text.
+_ROLE_STOP = re.compile(r"\s+\b(?:in|at|based in|effective|starting|from)\b.*$", re.I)
 
 
 def _clean(s: str | None) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip(" .,&/-")
+
+
+def _clean_role(role: str) -> str:
+    return _clean(_ROLE_STOP.sub("", role or ""))
 
 
 def _extract_leadership(text: str) -> list[tuple[str, str, str]]:
@@ -306,7 +321,7 @@ def _extract_leadership(text: str) -> list[tuple[str, str, str]]:
     for pattern, mtype in _LEAD_PATTERNS:
         for m in pattern.finditer(text):
             person = _clean(m.group(1))
-            role = "Board Member" if mtype == "board_appointment" else _clean(
+            role = "Board Member" if mtype == "board_appointment" else _clean_role(
                 m.group(2) if m.lastindex and m.lastindex >= 2 else "") or "executive"
             if person:
                 found.append((person, role, mtype))
@@ -346,49 +361,82 @@ def _from_news_signal(opp) -> tuple[str, str, str, str] | None:
     return None
 
 
+_DM_MATCH_CONFIDENCE_FLOOR = 0.75   # PlatformDecisionMakerIndex's company+name tier or better
+
+
+def _match_decision_maker(dm_index: PlatformDecisionMakerIndex | None, *, company_domain: str | None,
+                          person: str, title: str) -> int | None:
+    """Conservative match against existing decision_makers, reusing the same
+    company+name(+title) matching infrastructure the historical-import sync uses
+    (sync.dm_sync.PlatformDecisionMakerIndex). No LinkedIn/email evidence is available
+    from a news article, so this only ever reaches the company-name tiers (>=0.75) —
+    same-name-different-company never collides (the index requires a domain match).
+    Below the floor -> unresolved (never guessed, never attached to the wrong person)."""
+    if dm_index is None or not company_domain or not person:
+        return None
+    dm_id, _match_type, confidence = dm_index.match(
+        linkedin="", email="", domain=company_domain,
+        person_key=norm_person_name(person), title=norm_title(title))
+    return dm_id if (dm_id is not None and confidence >= _DM_MATCH_CONFIDENCE_FLOOR) else None
+
+
 def _blog_signal(opp, person: str, from_title: str, to_title: str, mtype: str,
-                 eff: tuple[int, int] | None, now_ym: tuple[int, int]) -> dict:
+                 eff: tuple[int, int] | None, now_ym: tuple[int, int],
+                 *, dm_index: PlatformDecisionMakerIndex | None = None) -> dict:
     bf = classify_seniority(to_title)
-    raw = "|".join([opp.opportunity_id or opp.article_url, person.lower(), mtype, to_title.lower()])
+    # Keyed on the real-world event's identity (who/where/what/when) — deliberately
+    # NOT on opp.opportunity_id, so two different articles (from the same or different
+    # feeds) reporting the identical movement collapse to one signal instead of one
+    # per article. A genuinely later event (different title/month) still gets its own row.
+    raw = "|".join([opp.company_domain or "", person.lower(), mtype, to_title.lower(), _ymstr(eff)])
+    geography = extract_geography(f"{opp.article_title or ''} {opp.summary or ''}")
+    dm_id = _match_decision_maker(dm_index, company_domain=opp.company_domain, person=person, title=to_title)
     return {
         "signal_id": hashlib.sha1(raw.encode("utf-8")).hexdigest()[:32],
         "company_domain": opp.company_domain, "company_name": opp.company_name,
-        "decision_maker_id": None, "linkedin_url": "", "person_name": person,
+        "decision_maker_id": dm_id, "linkedin_url": "", "person_name": person,
         "movement_type": mtype, "from_title": from_title, "to_title": to_title,
         "seniority_band": bf[0], "role_function": bf[1],
         "effective_date": _ymstr(eff), "event_age_days": _age_days(eff, now_ym),
         "confidence": "medium" if eff else "low", "source": "blog_event",
         "source_ref": opp.opportunity_id or opp.article_url,
         "summary": (opp.summary or opp.article_title or "")[:500],
+        "geography": geography,
     }
 
 
 def from_blog_events(session: Session, *, now: datetime | None = None) -> list[dict]:
-    """Derive person-level signals from blog/company-news opportunities. Reads the
-    legacy ``Leadership Change`` type via free-text regex, and the Change_03
-    company-news people-move types (EXECUTIVE_HIRE / LEADERSHIP_CHANGE / ROLE_CHANGE)
-    via their structured ``company_news_signal``. Director+ only (gated)."""
+    """Derive person-level signals from ANY leadership-shaped opportunity — the legacy
+    Blog Crawler ``Leadership Change`` type, the Change_03 company-news structured
+    ``company_news_signal``, and (new) EXECUTIVE_HIRE/LEADERSHIP_CHANGE/ROLE_CHANGE
+    opportunities from the News Collection Engine (any configured RSS or Google Alerts
+    feed — content-driven, nothing here is source-specific). Director+ only (gated).
+
+    Structured ``company_news_signal`` is tried first (more reliable, known format);
+    when it's absent — which is always true for a News-Intelligence-sourced article,
+    since that engine doesn't populate it — this falls back to the same free-text
+    person+role extraction used for the legacy type, so no leadership-shaped opportunity
+    is silently dropped just because it came from a different engine."""
     now_ym = _now_ym(now)
     out: list[dict] = []
+    dm_index = PlatformDecisionMakerIndex.build(session)   # built once, reused per row
     rows = session.scalars(
         select(Opportunity).where(Opportunity.opportunity_type.in_(_BLOG_LEADERSHIP_TYPES))
     )
     for opp in rows:
         eff = _published_ym(opp.published_date)
-        if opp.opportunity_type in _NEWS_TYPES:
-            parsed = _from_news_signal(opp)
-            if parsed is None:
-                continue
+        parsed = _from_news_signal(opp) if opp.opportunity_type in _NEWS_TYPES else None
+        if parsed is not None:
             person, from_title, to_title, mtype = parsed
             if classify_seniority(to_title) is None:   # below director+ → out of scope
                 continue
-            out.append(_blog_signal(opp, person, from_title, to_title, mtype, eff, now_ym))
-        else:
-            text = f"{opp.article_title or ''}. {opp.summary or ''}"
-            for person, role, mtype in _extract_leadership(text):
-                if classify_seniority(role) is None:   # below director+ → out of scope
-                    continue
-                out.append(_blog_signal(opp, person, "", role, mtype, eff, now_ym))
+            out.append(_blog_signal(opp, person, from_title, to_title, mtype, eff, now_ym, dm_index=dm_index))
+            continue
+        text = f"{opp.article_title or ''}. {opp.summary or ''}"
+        for person, role, mtype in _extract_leadership(text):
+            if classify_seniority(role) is None:   # below director+ → out of scope
+                continue
+            out.append(_blog_signal(opp, person, "", role, mtype, eff, now_ym, dm_index=dm_index))
     return _dedup(out)
 
 
@@ -583,6 +631,18 @@ def from_decision_maker_snapshots(session: Session, *, now: datetime | None = No
     return _dedup(out)
 
 
+def _apply_priority(session: Session, signals: list[dict]) -> list[dict]:
+    """Stamp the reusable ``priority_tier`` (leadership_signals/priority.py) onto every
+    signal, from any source — startup/scaleup companies and India-relevant movement are
+    high priority; unrelated overseas movement at an established/incumbent company ranks
+    lower (kept, never discarded). Company tier is read once for the whole batch."""
+    tiers = dict(session.execute(select(Company.company_domain, Company.company_tier)).all())
+    for s in signals:
+        s.setdefault("geography", "")
+        s["priority_tier"] = priority_tier(tiers.get(s.get("company_domain")), s["geography"])
+    return signals
+
+
 def _replace(session: Session, source: str, signals: list[dict]) -> None:
     from orchestrator import provenance
 
@@ -610,14 +670,14 @@ def rebuild(session: Session, *, window_months: int = DEFAULT_WINDOW_MONTHS,
     - blog_event: blog/company news opportunities
     - snapshot_comparison: consecutive decision maker snapshots (new for Apify)
     """
-    li = from_decision_makers(session, window_months=window_months, now=now)
+    li = _apply_priority(session, from_decision_makers(session, window_months=window_months, now=now))
     _replace(session, "linkedin_history", li)
 
-    blog = from_blog_events(session, now=now) if include_blog else []
+    blog = _apply_priority(session, from_blog_events(session, now=now)) if include_blog else []
     if include_blog:
         _replace(session, "blog_event", blog)
 
-    snapshots = from_decision_maker_snapshots(session, now=now) if include_snapshots else []
+    snapshots = _apply_priority(session, from_decision_maker_snapshots(session, now=now)) if include_snapshots else []
     if include_snapshots:
         _replace(session, "snapshot_comparison", snapshots)
 

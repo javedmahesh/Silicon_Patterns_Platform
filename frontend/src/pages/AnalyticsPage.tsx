@@ -54,6 +54,7 @@ export function AnalyticsPage() {
   const cats = s?.signal_category_counts ?? {};
   const coverageData = [
     { name: "News signals", value: cats.NEWS ?? 0 },
+    { name: "Project signals", value: cats.PROJECT ?? 0 },
     { name: "Leadership signals", value: cats.LEADERSHIP ?? 0 },
     { name: "Eng. jobs", value: s?.total_jobs ?? 0 },
     { name: "Demand", value: s?.total_demand_signals ?? 0 },

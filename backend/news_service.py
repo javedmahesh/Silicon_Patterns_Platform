@@ -14,6 +14,7 @@ from __future__ import annotations
 from fastapi import HTTPException, status
 
 from backend import repositories as repo
+from integration.news.project_intel import PROJECT_ROLE_FAMILIES
 from backend.schemas import (
     OpportunityDetailOut,
     OpportunityOut,
@@ -58,6 +59,9 @@ def get_opportunity_detail(session: Session, opportunity_id: str) -> Opportunity
     detail.related = related
     detail.reviews = reviews
     detail.timeline = timeline
+    # Structured DM role families for a project opportunity (derived from its type; the
+    # UI surfaces "relevant contacts" to guide LATER manual discovery — never Apify).
+    detail.role_families = list(PROJECT_ROLE_FAMILIES.get(opp.opportunity_type, ()))
     return detail
 
 

@@ -32,8 +32,9 @@ _RANK: dict[str, int] = {
     "founder": 6,
 }
 
-# Heads we track (the task names exactly these four functions).
-_TRACKED_HEAD_FUNCTIONS = ("engineering", "product", "technology", "business_development")
+# Heads we track (the task names exactly these functions, incl. procurement/sourcing
+# leadership per the leadership-movement News phase).
+_TRACKED_HEAD_FUNCTIONS = ("engineering", "product", "technology", "business_development", "procurement")
 
 _C_ABBREVS = r"\b(ceo|cto|cfo|coo|cmo|cio|ciso|cpo|cro|cdo|cso|cxo|cao|cco|cto/founder)\b"
 _BOARD = re.compile(
@@ -58,6 +59,8 @@ def _detect_function(t: str) -> str:
         return "technology"
     if re.search(r"\b(business development|biz dev|sales|revenue|commercial|go to market|gtm|marketing|growth)\b", t):
         return "business_development"
+    if re.search(r"\b(procurement|sourcing|supply chain|vendor management)\b", t):
+        return "procurement"
     if re.search(r"\b(operations|operating|coo)\b", t):
         return "operations"
     if re.search(r"\b(finance|financial|cfo|accounting)\b", t):

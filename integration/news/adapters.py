@@ -70,7 +70,7 @@ class NewsSourceAdapter:
     adapter_type: str = "base"
 
     def fetch(self, source: Any, *, raw: str | bytes | None = None,
-              if_modified_since: Any = None) -> list[dict[str, Any]]:
+              if_modified_since: Any = None, errors: list[str] | None = None) -> list[dict[str, Any]]:
         """Return normalized articles for *source*.
 
         *source* is a ``NewsSource`` row (or any object with ``.url``/``.publisher``/
@@ -78,9 +78,13 @@ class NewsSourceAdapter:
         supplied feed content (used by tests and offline replays). ``if_modified_since``
         (a datetime, typically the source's ``last_collected_at``) enables a conditional
         GET so an unchanged feed returns nothing (HTTP 304) — incremental, no re-parse.
+
+        ``errors`` is an optional sink: fetch/parse failures are appended to it (a dead
+        or malformed feed is observable) while this still returns ``[]`` so one bad
+        source never breaks collection. A clean empty feed / 304 leaves it untouched.
         """
         content = raw if raw is not None else self._download(
-            getattr(source, "url", ""), if_modified_since=if_modified_since)
+            getattr(source, "url", ""), if_modified_since=if_modified_since, errors=errors)
         if not content:
             return []
         try:
@@ -88,6 +92,8 @@ class NewsSourceAdapter:
         except ET.ParseError as exc:
             logger.warning("[news:%s] parse error for %s: %s", self.adapter_type,
                            getattr(source, "url", "?"), exc)
+            if errors is not None:
+                errors.append(f"parse error: {exc}")
             return []
         publisher = getattr(source, "publisher", "") or ""
         name = getattr(source, "name", "") or publisher
@@ -99,7 +105,8 @@ class NewsSourceAdapter:
             a.setdefault("collected_at", datetime.now(timezone.utc).isoformat())
         return articles
 
-    def _download(self, url: str, *, if_modified_since: Any = None) -> str:
+    def _download(self, url: str, *, if_modified_since: Any = None,
+                  errors: list[str] | None = None) -> str:
         if not url:
             return ""
         headers = {"User-Agent": _UA}
@@ -116,9 +123,13 @@ class NewsSourceAdapter:
                 logger.info("[news:%s] 304 Not Modified: %s", self.adapter_type, url)
             else:
                 logger.warning("[news:%s] HTTP %s for %s", self.adapter_type, exc.code, url)
+                if errors is not None:
+                    errors.append(f"HTTP {exc.code}")
             return ""
         except Exception as exc:  # network/DNS/timeout — never fail the pipeline
             logger.warning("[news:%s] fetch failed for %s: %s", self.adapter_type, url, exc)
+            if errors is not None:
+                errors.append(f"{type(exc).__name__}: {str(exc)[:80]}")
             return ""
 
     def parse(self, content: str | bytes) -> list[dict[str, Any]]:  # pragma: no cover
@@ -248,17 +259,20 @@ def get_adapter(adapter_type: str) -> NewsSourceAdapter:
 
 def fetch_articles(source: Any, *, raw: str | bytes | None = None,
                    rows: Iterable[dict[str, Any]] | None = None,
-                   incremental: bool = True) -> list[dict[str, Any]]:
+                   incremental: bool = True,
+                   errors: list[str] | None = None) -> list[dict[str, Any]]:
     """Fetch + normalize articles for a configured *source* using its adapter.
 
     When ``incremental`` (default), a live adapter sends the source's
     ``last_collected_at`` as ``If-Modified-Since`` so an unchanged feed is skipped.
+    ``errors`` (optional) collects a reason string when a live feed fails to fetch or
+    parse — so a dead/broken source is observable instead of silently yielding nothing.
     """
     adapter = get_adapter(getattr(source, "adapter_type", "rss"))
     ims = getattr(source, "last_collected_at", None) if incremental else None
     if isinstance(adapter, FileAdapter):
         return adapter.fetch(source, raw=raw, rows=rows)
-    return adapter.fetch(source, raw=raw, if_modified_since=ims)
+    return adapter.fetch(source, raw=raw, if_modified_since=ims, errors=errors)
 
 
 # Production-quality semiconductor / industry feeds used to seed ``news_sources``.
@@ -266,30 +280,65 @@ def fetch_articles(source: Any, *, raw: str | bytes | None = None,
 # Google Alerts RSS URL — see ``adapter_type='google_alerts'``, url left blank until
 # the analyst creates the alert). ``enabled`` gates whether the scheduler fetches it.
 #
-# Semiconductor-industry publications (verified public RSS/Atom endpoints):
+# The optional ``category`` key is source-intelligence metadata for FUTURE
+# prioritization (startup vs India vs global vs generic). It is intentionally NOT a
+# DB column yet (no ranking system is built) — ``seed_news_sources`` ignores it, so it
+# is a zero-risk annotation. When a priority feature lands, add a news_sources.category
+# column + migration and start persisting it (see FEED_CATEGORIES below).
+#
+# Every URL below was verified live (reachable, valid RSS/Atom, recent items) before
+# being added — no invented endpoints.
 DEFAULT_SEMI_FEEDS: tuple[dict[str, Any], ...] = (
-    # --- publications (enabled) ---
+    # --- broad semiconductor publications (enabled) ---
     {"name": "EE Times", "adapter_type": "rss", "url": "https://www.eetimes.com/feed/",
-     "publisher": "EE Times", "credibility": 78, "enabled": True},
+     "publisher": "EE Times", "credibility": 78, "enabled": True, "category": "global"},
     {"name": "Semiconductor Engineering", "adapter_type": "rss",
      "url": "https://semiengineering.com/feed/", "publisher": "Semiconductor Engineering",
-     "credibility": 82, "enabled": True},
+     "credibility": 82, "enabled": True, "category": "global"},
     {"name": "Tom's Hardware", "adapter_type": "rss", "url": "https://www.tomshardware.com/feeds/all",
-     "publisher": "Tom's Hardware", "credibility": 68, "enabled": True},
+     "publisher": "Tom's Hardware", "credibility": 68, "enabled": True, "category": "generic"},
     {"name": "The Register — Systems", "adapter_type": "rss",
      "url": "https://www.theregister.com/headlines.atom", "publisher": "The Register",
-     "credibility": 66, "enabled": True},
+     "credibility": 66, "enabled": True, "category": "generic"},
+    # WikiChip Fuse: endpoint dead (connection refused, WinError 10061; 0 articles ever
+    # collected). Disabled 2026-07 — kept as a row so history/attribution survive; re-enable
+    # if fuse.wikichip.org comes back. See audit.
     {"name": "WikiChip Fuse", "adapter_type": "rss", "url": "https://fuse.wikichip.org/feed/",
-     "publisher": "WikiChip Fuse", "credibility": 70, "enabled": True},
+     "publisher": "WikiChip Fuse", "credibility": 70, "enabled": False, "category": "global"},
     # --- official company newsrooms (enabled) ---
     {"name": "NVIDIA Newsroom", "adapter_type": "rss",
      "url": "https://nvidianews.nvidia.com/releases.xml", "publisher": "NVIDIA",
-     "credibility": 85, "enabled": True},
+     "credibility": 85, "enabled": True, "category": "global"},
+    # --- startup / emerging-company & regional coverage (added 2026-07, all verified live) ---
+    # AI accelerators, datacenter silicon, chip-company news + analysis.
+    {"name": "The Next Platform", "adapter_type": "rss", "url": "https://www.nextplatform.com/feed/",
+     "publisher": "The Next Platform", "credibility": 74, "enabled": True, "category": "startup"},
+    # Chip/semiconductor startup funding, IPOs, emerging companies (incl. India). The
+    # semiconductors TAG feed — pure chip news (SK Hynix IPO, "AI chip startup raises
+    # $400M"); the broad /category/hardware feed was consumer-gadget noise, deliberately
+    # not used.
+    {"name": "TechCrunch — Semiconductors", "adapter_type": "rss",
+     "url": "https://techcrunch.com/tag/semiconductors/feed/", "publisher": "TechCrunch",
+     "credibility": 70, "enabled": True, "category": "startup"},
+    # European semiconductor startups, funding, design wins.
+    {"name": "eeNews Europe", "adapter_type": "rss", "url": "https://www.eenewseurope.com/en/feed/",
+     "publisher": "eeNews Europe", "credibility": 72, "enabled": True, "category": "startup"},
+    # Asia/India semiconductor ecosystem, fab/OSAT expansion, design centers.
+    {"name": "EE Times Asia", "adapter_type": "rss", "url": "https://www.eetasia.com/feed/",
+     "publisher": "EE Times Asia", "credibility": 76, "enabled": True, "category": "india"},
+    # RISC-V ecosystem/companies (official RISC-V International feed).
+    {"name": "RISC-V International", "adapter_type": "rss", "url": "https://riscv.org/feed/",
+     "publisher": "RISC-V International", "credibility": 80, "enabled": True, "category": "startup"},
     # --- Google Alerts (disabled until the analyst pastes an RSS-delivery URL) ---
     {"name": "Google Alerts — Semiconductor", "adapter_type": "google_alerts",
-     "url": "", "publisher": "Google Alerts", "credibility": 55, "enabled": False},
+     "url": "", "publisher": "Google Alerts", "credibility": 55, "enabled": False, "category": "global"},
     {"name": "Google Alerts — RISC-V", "adapter_type": "google_alerts",
-     "url": "", "publisher": "Google Alerts", "credibility": 55, "enabled": False},
+     "url": "", "publisher": "Google Alerts", "credibility": 55, "enabled": False, "category": "startup"},
     {"name": "Google Alerts — chip funding", "adapter_type": "google_alerts",
-     "url": "", "publisher": "Google Alerts", "credibility": 55, "enabled": False},
+     "url": "", "publisher": "Google Alerts", "credibility": 55, "enabled": False, "category": "startup"},
 )
+
+# Intended prioritization tiers for the source ``category`` metadata above, highest
+# strategic value first. Not consumed yet — documents the ordering a future
+# priority feature should apply. ``credibility`` is the interim ordering proxy.
+FEED_CATEGORIES: tuple[str, ...] = ("startup", "india", "global", "generic")

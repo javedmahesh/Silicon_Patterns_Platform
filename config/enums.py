@@ -105,6 +105,9 @@ LEADERSHIP_SENIORITY_BANDS: tuple[str, ...] = (
     "senior_director", "director", "head_of",
 )
 LEADERSHIP_SIGNAL_SOURCES: tuple[str, ...] = ("linkedin_history", "blog_event", "snapshot_comparison")
+# Reusable priority routing (leadership_signals/priority.py) — startup/India-relevant
+# movement is high; unrelated overseas movement at a large company is low (kept, not deleted).
+LEADERSHIP_PRIORITY_TIERS: tuple[str, ...] = ("high", "medium", "low")
 
 # --- Signal categories (first-class grouping of opportunities) --------------
 # Every opportunity belongs to exactly one signal_category. LEADERSHIP is a
@@ -113,10 +116,19 @@ LEADERSHIP_SIGNAL_SOURCES: tuple[str, ...] = ("linkedin_history", "blog_event", 
 # can be filtered, counted, and charted independently everywhere in the platform.
 # The category is derived deterministically from opportunity_type (see
 # signal_category_for) and persisted on the row (master_db.models.Opportunity).
-SIGNAL_CATEGORIES: tuple[str, ...] = ("LEADERSHIP", "NEWS")
+SIGNAL_CATEGORIES: tuple[str, ...] = ("LEADERSHIP", "PROJECT", "NEWS")
 # The opportunity_types that constitute the LEADERSHIP category (company-level
-# people-movement events). Everything else is NEWS.
+# people-movement events). Everything else is NEWS (or PROJECT, below).
 LEADERSHIP_OPPORTUNITY_TYPES: tuple[str, ...] = ("EXECUTIVE_HIRE", "LEADERSHIP_CHANGE", "ROLE_CHANGE")
+# The opportunity_types that constitute the PROJECT category — structured New
+# Semiconductor Project Intelligence (integration/news/project_intel.py). Kept in sync
+# with project_intel.PROJECT_EVENT_TYPES; separated OUT of the general NEWS feed so
+# project intelligence is independently filterable/countable everywhere.
+PROJECT_OPPORTUNITY_TYPES: tuple[str, ...] = (
+    "NEW_CHIP_PROGRAM", "NEW_ASIC_SOC", "TAPEOUT", "DESIGN_WIN", "DESIGN_CENTER",
+    "RND_CENTER", "FAB_NEW", "FAB_EXPANSION", "OSAT_ATMP", "CAPACITY_EXPANSION",
+    "FACILITY_EXPANSION",
+)
 
 
 def signal_category_for(opportunity_type: str | None) -> str:
@@ -124,8 +136,14 @@ def signal_category_for(opportunity_type: str | None) -> str:
 
     Deterministic and dependency-free so every writer (news engine, ingestors) and
     the DB backfill agree. Leadership people-movement types are their OWN category;
-    all other market events are NEWS."""
-    return "LEADERSHIP" if (opportunity_type or "").upper() in LEADERSHIP_OPPORTUNITY_TYPES else "NEWS"
+    structured semiconductor-project events are the PROJECT category; all other market
+    events are NEWS."""
+    t = (opportunity_type or "").upper()
+    if t in LEADERSHIP_OPPORTUNITY_TYPES:
+        return "LEADERSHIP"
+    if t in PROJECT_OPPORTUNITY_TYPES:
+        return "PROJECT"
+    return "NEWS"
 
 
 # --- Outreach (native module) ----------------------------------------------

@@ -132,6 +132,8 @@ class LeadershipSignalUpdate(BaseModel):
     movement_type: str | None = None
     seniority_band: str | None = None
     role_function: str | None = None
+    geography: str | None = None
+    priority_tier: str | None = None
     effective_date: str | None = None
     confidence: str | None = None
     company_name: str | None = None
@@ -220,12 +222,22 @@ class OpportunityOut(_ORM):
     is_relevant: bool = True
     related_group_id: str = ""
     technologies: list[str] = []
+    # New Project Intelligence: article-derived location + buying-intent tier. Blank /
+    # 'medium' on non-project and pre-0055 rows.
+    geography: str = ""
+    priority_tier: str = "medium"
 
     @field_validator("company_news_signal", "opportunity_subtype", "ai_summary",
-                     "executive_summary", "source_type", "related_group_id", mode="before")
+                     "executive_summary", "source_type", "related_group_id",
+                     "geography", mode="before")
     @classmethod
     def _str_or_empty(cls, v):   # NULL on pre-migration rows (columns added by the self-heal)
         return v or ""
+
+    @field_validator("priority_tier", mode="before")
+    @classmethod
+    def _priority_or_medium(cls, v):
+        return v or "medium"
 
     @field_validator("signal_category", mode="before")
     @classmethod
@@ -289,6 +301,10 @@ class OpportunityDetailOut(OpportunityOut):
     countries: list[str] = []
     keywords: list[str] = []
     confidence_breakdown: dict = {}
+    # Structured DM role families relevant to a PROJECT_INTEL event (guides LATER manual
+    # contact discovery; never runs Apify). Derived from opportunity_type — empty for
+    # non-project opportunities.
+    role_families: list[str] = []
     canonical_url: str = ""
     normalized_title: str = ""
     entity_fingerprint: str = ""
@@ -893,7 +909,10 @@ class LeadershipSignalOut(_ORM):
     event_age_days: int = -1
     confidence: str = "low"
     source: str = ""
+    source_ref: str = ""
     summary: str = ""
+    geography: str = ""
+    priority_tier: str = "medium"
 
 
 class EngagementOut(_ORM):

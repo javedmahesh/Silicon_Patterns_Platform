@@ -29,6 +29,7 @@ const SORT_OPTIONS = [
 // events no longer appear under the general Opportunities/News feed.
 const CATEGORY_OPTIONS = [
   { value: "NEWS", label: "News" },
+  { value: "PROJECT", label: "Projects" },
   { value: "LEADERSHIP", label: "Leadership" },
   { value: "ALL", label: "All signals" },
 ] as const;
@@ -37,6 +38,7 @@ type Tone = "neutral" | "accent" | "positive" | "warning" | "danger";
 const LIFECYCLE_TONE: Record<string, Tone> = {
   NEW: "accent", ACTIVE: "positive", MONITORING: "warning", RESOLVED: "neutral", ARCHIVED: "neutral",
 };
+const PRIORITY_TONE: Record<string, Tone> = { high: "danger", medium: "warning", low: "neutral" };
 
 const columns: ColumnDef<OpportunityOut, any>[] = [
   {
@@ -45,7 +47,12 @@ const columns: ColumnDef<OpportunityOut, any>[] = [
     cell: ({ row }) =>
       row.original.opportunity_type ? (
         <div className="flex flex-col items-start gap-0.5">
-          <Badge tone="accent">{enumLabel(row.original.opportunity_type)}</Badge>
+          <div className="flex items-center gap-1">
+            <Badge tone="accent">{enumLabel(row.original.opportunity_type)}</Badge>
+            {row.original.priority_tier === "high" && (
+              <Badge tone={PRIORITY_TONE.high}>High</Badge>
+            )}
+          </div>
           {row.original.opportunity_subtype && (
             <span className="text-10 text-fg-subtle">{enumLabel(row.original.opportunity_subtype)}</span>
           )}
@@ -60,7 +67,9 @@ const columns: ColumnDef<OpportunityOut, any>[] = [
     cell: ({ row }) => (
       <div className="min-w-0">
         <div className="truncate text-fg">{row.original.company_name || row.original.company_domain}</div>
-        <div className="truncate text-11 text-fg-subtle">{row.original.company_domain}</div>
+        <div className="truncate text-11 text-fg-subtle">
+          {row.original.geography || row.original.company_domain}
+        </div>
       </div>
     ),
   },

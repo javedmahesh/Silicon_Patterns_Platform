@@ -15,3 +15,4 @@ export const LEADERSHIP_SENIORITY_BANDS = [
   "senior_director", "director", "head_of",
 ] as const;
 export const CONFIDENCE_LEVELS = ["low", "medium", "high"] as const;
+export const LEADERSHIP_PRIORITY_TIERS = ["high", "medium", "low"] as const;

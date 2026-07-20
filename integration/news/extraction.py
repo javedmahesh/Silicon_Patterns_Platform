@@ -18,6 +18,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from integration.news.project_intel import (
+    SUBSUMES_GENERIC,
+    extract_project_events,
+    project_geography,
+    project_priority,
+)
+
 # ---------------------------------------------------------------- vocabularies
 # Event categories -> trigger phrases. One article can match several (multi-signal:
 # e.g. "acquires X and expands into Y while hiring" -> ACQUISITION + EXPANSION + HIRING).
@@ -102,6 +109,11 @@ _BASE_SCORE: dict[str, int] = {
     "ACQUISITION": 82, "FUNDING": 80, "IPO": 78, "PRODUCT_LAUNCH": 70,
     "EXPANSION": 72, "HIRING": 66, "PARTNERSHIP": 68, "EXECUTIVE_HIRE": 60,
     "LEADERSHIP_CHANGE": 58, "CONTRACT_WIN": 74, "COMPANY_NEWS": 50,
+    # New Semiconductor Project Intelligence (integration/news/project_intel.py) — a
+    # concrete company-level project is a strong, actionable buying signal.
+    "NEW_CHIP_PROGRAM": 84, "NEW_ASIC_SOC": 84, "TAPEOUT": 86, "DESIGN_WIN": 82,
+    "DESIGN_CENTER": 80, "RND_CENTER": 78, "FAB_NEW": 82, "FAB_EXPANSION": 74,
+    "OSAT_ATMP": 76, "CAPACITY_EXPANSION": 70, "FACILITY_EXPANSION": 68,
 }
 
 _WHY_TEMPLATES: dict[str, str] = {
@@ -124,6 +136,21 @@ _WHY_TEMPLATES: dict[str, str] = {
                          "for the next buying cycle.",
     "CONTRACT_WIN": "A new design win drives immediate execution capacity needs.",
     "COMPANY_NEWS": "Notable company activity worth monitoring for follow-on signals.",
+    "NEW_CHIP_PROGRAM": "A new chip program means an active design cycle — a prime window for "
+                        "design, verification, and IP engagement.",
+    "NEW_ASIC_SOC": "A new ASIC/SoC program drives ASIC/SoC engineering, verification, and "
+                    "physical-design demand.",
+    "TAPEOUT": "A tapeout / first silicon signals an advanced program with immediate "
+               "verification, DFT, and bring-up needs.",
+    "DESIGN_WIN": "A design win commits a delivery schedule — near-term engineering-capacity demand.",
+    "DESIGN_CENTER": "A new design center is a build-out of local engineering capacity — a strong "
+                     "staffing and services signal, often ahead of public job posts.",
+    "RND_CENTER": "A new R&D/engineering center signals investment in local design capability.",
+    "FAB_NEW": "A new fab is a multi-year build with equipment, packaging/test, and engineering ramp.",
+    "FAB_EXPANSION": "A fab expansion adds capacity and the engineering to support it.",
+    "OSAT_ATMP": "An OSAT/ATMP project drives packaging, test, and assembly-engineering demand.",
+    "CAPACITY_EXPANSION": "A capacity expansion signals rising volume and supporting engineering needs.",
+    "FACILITY_EXPANSION": "A facility expansion is corporate growth worth monitoring for follow-on programs.",
 }
 
 _IMPACT_TEMPLATES: dict[str, str] = {
@@ -138,6 +165,17 @@ _IMPACT_TEMPLATES: dict[str, str] = {
     "LEADERSHIP_CHANGE": "Roadmap and budget re-prioritization.",
     "CONTRACT_WIN": "Committed delivery timeline requiring added capacity.",
     "COMPANY_NEWS": "General signal; monitor for a concrete follow-on trigger.",
+    "NEW_CHIP_PROGRAM": "Active design/verification workload around the new silicon.",
+    "NEW_ASIC_SOC": "ASIC/SoC design, verification, and physical-design workload.",
+    "TAPEOUT": "Immediate verification/DFT/bring-up workload; program is advanced.",
+    "DESIGN_WIN": "Committed program execution and delivery capacity.",
+    "DESIGN_CENTER": "New-site engineering staffing and vendor/tooling selection.",
+    "RND_CENTER": "New-site R&D staffing and infrastructure ramp.",
+    "FAB_NEW": "Multi-year equipment, packaging/test, and engineering ramp.",
+    "FAB_EXPANSION": "Added capacity with supporting engineering.",
+    "OSAT_ATMP": "Packaging/test/assembly-engineering demand.",
+    "CAPACITY_EXPANSION": "Rising volume and supporting engineering needs.",
+    "FACILITY_EXPANSION": "Site-level growth; monitor for follow-on programs.",
 }
 
 
@@ -164,6 +202,13 @@ class ExtractedSignal:
     opportunity_score: int = 0
     effective_opportunity_score: int = 0
     lead_readiness_score: int = 0
+    # New Project Intelligence extras (blank for non-project signals): article-derived
+    # location, buying-intent tier, whether this is a structured project event, and the
+    # DM role families a later manual contact-discovery pass should target.
+    geography: str = ""
+    priority_tier: str = ""
+    is_project: bool = False
+    role_families: list[str] = field(default_factory=list)
 
     def salient_entities(self) -> list[str]:
         """Entities used for the dedup fingerprint (order-independent identity of the event)."""
@@ -350,8 +395,22 @@ def extract_opportunities(article: dict[str, Any]) -> list[ExtractedSignal]:
                                          or feed_row.get("news_type") or "").strip().upper())
     if feed_type and feed_type not in fired:
         fired.insert(0, feed_type)
+
+    # 1b) Structured New Project Intelligence (precise, evidence-gated). A project event
+    # is MORE precise than the generic type it subsumes, so we suppress the generic one
+    # for this article (one real event -> one opportunity, not two — §12). Project types
+    # lead so they rank first.
+    project_events = extract_project_events(title, body)
+    project_by_type = {e.event_type: e for e in project_events}
+    subsumed: set[str] = set()
+    for etype in project_by_type:
+        subsumed.update(SUBSUMES_GENERIC.get(etype, ()))
+    fired = [f for f in fired if f not in subsumed and f not in project_by_type]
+    fired = list(project_by_type.keys()) + fired
     if not fired:
         fired = ["COMPANY_NEWS"]
+
+    geography = project_geography(full)
 
     # 2) Entities (shared across every signal from this article).
     techs = _extract_technologies(full)
@@ -386,10 +445,14 @@ def extract_opportunities(article: dict[str, Any]) -> list[ExtractedSignal]:
 
     signals: list[ExtractedSignal] = []
     for event_type in fired:
-        in_title = bool(_find_matches(title_lc, _EVENT_TRIGGERS.get(event_type, ())))
+        project = project_by_type.get(event_type)
+        # A structured project event is concrete by construction — treat it as a
+        # title-strength signal; a scale figure ($/capacity) strengthens it further.
+        in_title = bool(project) or bool(_find_matches(title_lc, _EVENT_TRIGGERS.get(event_type, ())))
         entity_count = len(techs) + len(products) + len(people) + len(orgs)
+        has_scale = bool(money) or bool(project and project.has_scale)
         confidence, breakdown = _confidence(
-            event_type, in_title, entity_count, bool(money), source_cred, len(body))
+            event_type, in_title, entity_count, has_scale, source_cred, len(body))
 
         # keywords: this event's fired triggers + top techs.
         kw = list(dict.fromkeys(
@@ -400,7 +463,9 @@ def extract_opportunities(article: dict[str, Any]) -> list[ExtractedSignal]:
         base = _BASE_SCORE.get(event_type, 50)
         # confidence scales the effective score a little (evidence-weighted).
         effective = int(base * (0.6 + 0.4 * confidence / 100))
-        reasoning = _reasoning(event_type, in_title, entity_count, bool(money), source_cred, subtype)
+        reasoning = _reasoning(event_type, in_title, entity_count, has_scale, source_cred, subtype)
+        if project:   # provenance: the exact sentence the project event came from
+            reasoning += f" Project evidence: \"{project.evidence}\"."
 
         signals.append(ExtractedSignal(
             opportunity_type=event_type,
@@ -415,6 +480,12 @@ def extract_opportunities(article: dict[str, Any]) -> list[ExtractedSignal]:
             confidence=confidence, confidence_breakdown=breakdown, source_credibility=source_cred,
             opportunity_score=base, effective_opportunity_score=effective,
             lead_readiness_score=int((base + confidence) / 2),
+            geography=geography,
+            is_project=bool(project),
+            # provisional priority (company tier unknown here); the engine recomputes
+            # with the resolved company's tier. Non-project signals carry no tier.
+            priority_tier=(project_priority(None, event_type, geography) if project else ""),
+            role_families=list(project.role_families) if project else [],
         ))
     return signals
 
@@ -453,16 +524,21 @@ def demo() -> None:
     sigs = extract_opportunities(article)
     types = {s.opportunity_type for s in sigs}
     assert "ACQUISITION" in types, types
-    assert "EXPANSION" in types, types
+    # "open a new R&D center" is now the precise RND_CENTER project event (supersedes the
+    # generic EXPANSION), and it carries geography + a high priority (India, startup-ish).
+    assert "RND_CENTER" in types and "EXPANSION" not in types, types
     assert "HIRING" in types, types            # multi-signal: 3+ events from one article
+    rnd = next(s for s in sigs if s.opportunity_type == "RND_CENTER")
+    assert rnd.is_project and rnd.geography == "Bengaluru, India" and rnd.priority_tier == "high", rnd
+    assert rnd.role_families, rnd.role_families
     acq = next(s for s in sigs if s.opportunity_type == "ACQUISITION")
     assert "RISC-V" in acq.technologies, acq.technologies
     assert "India" in acq.countries, acq.countries
     assert acq.confidence > 0 and acq.confidence_breakdown, acq.confidence_breakdown
     assert acq.executive_summary and acq.why_this_matters and acq.ai_reasoning
     assert "Jane Doe" in acq.people, acq.people
-    print(f"OK — {len(sigs)} signals: {sorted(types)}; acq confidence={acq.confidence} "
-          f"techs={acq.technologies} people={acq.people}")
+    print(f"OK — {len(sigs)} signals: {sorted(types)}; rnd geo={rnd.geography} "
+          f"priority={rnd.priority_tier} roles={rnd.role_families}")
 
 
 if __name__ == "__main__":  # pragma: no cover

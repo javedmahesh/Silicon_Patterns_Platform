@@ -19,7 +19,12 @@ import {
   useUpdateLeadershipSignal,
 } from "@/lib/api/queries";
 import { useAuth } from "@/lib/auth/store";
-import { CONFIDENCE_LEVELS, LEADERSHIP_MOVEMENT_TYPES, LEADERSHIP_SENIORITY_BANDS } from "@/lib/enums";
+import {
+  CONFIDENCE_LEVELS,
+  LEADERSHIP_MOVEMENT_TYPES,
+  LEADERSHIP_PRIORITY_TIERS,
+  LEADERSHIP_SENIORITY_BANDS,
+} from "@/lib/enums";
 import { enumLabel, fmtInt, fmtRelative } from "@/lib/format";
 import type { LeadershipSignalOut } from "@/lib/api/types";
 
@@ -30,7 +35,9 @@ const LDR_FIELDS: EditField[] = [
   { name: "movement_type", label: "Movement", kind: "select", options: LEADERSHIP_MOVEMENT_TYPES },
   { name: "seniority_band", label: "Seniority", kind: "select", options: LEADERSHIP_SENIORITY_BANDS },
   { name: "confidence", label: "Confidence", kind: "select", options: CONFIDENCE_LEVELS },
+  { name: "priority_tier", label: "Priority", kind: "select", options: LEADERSHIP_PRIORITY_TIERS },
   { name: "role_function", label: "Function" },
+  { name: "geography", label: "Geography" },
   { name: "effective_date", label: "Effective (YYYY-MM)" },
   { name: "company_name", label: "Company" },
   { name: "linkedin_url", label: "LinkedIn URL", full: true },
@@ -96,6 +103,7 @@ export function LeadershipPage() {
               showCompany
               onDelete={onDeleteSignal}
               onEdit={onEditSignal}
+              onViewSource={setActiveId}
               emptyHint="No director-level+ moves — hires, departures, promotions, board or founder changes — detected yet."
             />
           )}

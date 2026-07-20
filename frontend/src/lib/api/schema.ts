@@ -11283,6 +11283,11 @@ export interface components {
              */
             from_title: string;
             /**
+             * Geography
+             * @default
+             */
+            geography: string;
+            /**
              * Linkedin Url
              * @default
              */
@@ -11297,6 +11302,11 @@ export interface components {
              * @default
              */
             person_name: string;
+            /**
+             * Priority Tier
+             * @default medium
+             */
+            priority_tier: string;
             /**
              * Role Function
              * @default
@@ -11314,6 +11324,11 @@ export interface components {
              * @default
              */
             source: string;
+            /**
+             * Source Ref
+             * @default
+             */
+            source_ref: string;
             /**
              * Summary
              * @default
@@ -11338,12 +11353,16 @@ export interface components {
             effective_date?: string | null;
             /** From Title */
             from_title?: string | null;
+            /** Geography */
+            geography?: string | null;
             /** Linkedin Url */
             linkedin_url?: string | null;
             /** Movement Type */
             movement_type?: string | null;
             /** Person Name */
             person_name?: string | null;
+            /** Priority Tier */
+            priority_tier?: string | null;
             /** Role Function */
             role_function?: string | null;
             /** Seniority Band */
@@ -11989,6 +12008,11 @@ export interface components {
              * @default
              */
             executive_summary: string;
+            /**
+             * Geography
+             * @default
+             */
+            geography: string;
             /** Ingested At */
             ingested_at?: string | null;
             /**
@@ -12054,6 +12078,11 @@ export interface components {
              */
             people: string[];
             /**
+             * Priority Tier
+             * @default medium
+             */
+            priority_tier: string;
+            /**
              * Products
              * @default []
              */
@@ -12078,6 +12107,11 @@ export interface components {
              * @default []
              */
             reviews: components["schemas"]["OpportunityReviewOut"][];
+            /**
+             * Role Families
+             * @default []
+             */
+            role_families: string[];
             /**
              * Signal Category
              * @default NEWS
@@ -12184,6 +12218,11 @@ export interface components {
              */
             executive_summary: string;
             /**
+             * Geography
+             * @default
+             */
+            geography: string;
+            /**
              * Is Relevant
              * @default true
              */
@@ -12220,6 +12259,11 @@ export interface components {
              * @default
              */
             opportunity_type: string;
+            /**
+             * Priority Tier
+             * @default medium
+             */
+            priority_tier: string;
             /**
              * Published Date
              * @default

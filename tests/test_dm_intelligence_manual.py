@@ -76,7 +76,9 @@ def test_opportunities_filtered_by_signal_category(app_db):
 def test_analytics_signal_category_counts(app_db):
     _, c = app_db
     d = c.get("/analytics/summary").json()
-    assert d["signal_category_counts"] == {"LEADERSHIP": 2, "NEWS": 2}
+    # PROJECT is now a first-class signal category alongside LEADERSHIP and NEWS (the
+    # seed has no project-type opportunities, so PROJECT is 0).
+    assert d["signal_category_counts"] == {"LEADERSHIP": 2, "PROJECT": 0, "NEWS": 2}
 
 
 # ----------------------------------------------------- manual job lifecycle

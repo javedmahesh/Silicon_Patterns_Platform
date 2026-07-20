@@ -27,6 +27,7 @@ export function LeadershipSignalsSection({
   emptyHint,
   onDelete,
   onEdit,
+  onViewSource,
 }: {
   signals: LeadershipSignalOut[];
   /** Group rows under a per-company header (for the cross-company directory feed). */
@@ -37,6 +38,8 @@ export function LeadershipSignalsSection({
   onDelete?: (signalId: string) => void;
   /** Admin-provided: enables a per-row edit control. */
   onEdit?: (sig: LeadershipSignalOut) => void;
+  /** Opens the source article/opportunity for a news/blog-derived signal. */
+  onViewSource?: (opportunityId: string) => void;
 }) {
   if (signals.length === 0) {
     return (
@@ -55,7 +58,7 @@ export function LeadershipSignalsSection({
     return (
       <div className="divide-y divide-line">
         {signals.map((s) => (
-          <LeadershipSignalRow key={s.signal_id} sig={s} showCompany={showCompany} onDelete={onDelete} onEdit={onEdit} />
+          <LeadershipSignalRow key={s.signal_id} sig={s} showCompany={showCompany} onDelete={onDelete} onEdit={onEdit} onViewSource={onViewSource} />
         ))}
       </div>
     );

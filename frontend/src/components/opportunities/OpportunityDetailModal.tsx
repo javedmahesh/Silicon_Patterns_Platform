@@ -36,6 +36,7 @@ type Tone = "neutral" | "accent" | "positive" | "warning" | "danger";
 const LIFECYCLE_TONE: Record<string, Tone> = {
   NEW: "accent", ACTIVE: "positive", MONITORING: "warning", RESOLVED: "neutral", ARCHIVED: "neutral",
 };
+const PRIORITY_TONE: Record<string, Tone> = { high: "danger", medium: "warning", low: "neutral" };
 const LIFECYCLES = ["NEW", "ACTIVE", "MONITORING", "RESOLVED", "ARCHIVED"];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -197,6 +198,10 @@ function Detail({
         <Badge tone="accent">{enumLabel(data.opportunity_type)}</Badge>
         {data.opportunity_subtype && <Badge tone="neutral">{enumLabel(data.opportunity_subtype)}</Badge>}
         <Badge tone={LIFECYCLE_TONE[data.lifecycle_status] ?? "neutral"}>{enumLabel(data.lifecycle_status)}</Badge>
+        {data.priority_tier && data.priority_tier !== "medium" && (
+          <Badge tone={PRIORITY_TONE[data.priority_tier] ?? "neutral"}>{enumLabel(data.priority_tier)} priority</Badge>
+        )}
+        {data.geography && <Badge tone="neutral">{data.geography}</Badge>}
         {!data.is_relevant && <Badge tone="danger">Not relevant</Badge>}
         <span className="text-12 text-fg-muted">{data.company_name || data.company_domain}</span>
         <span className="text-11 text-fg-subtle">· {data.company_domain}</span>
@@ -204,6 +209,12 @@ function Detail({
           {fmtRelative(data.published_date)}
         </span>
       </div>
+
+      {data.role_families && data.role_families.length > 0 && (
+        <Section title="Relevant contacts to target">
+          <Chips items={data.role_families} tone="accent" />
+        </Section>
+      )}
 
       {/* scores */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">

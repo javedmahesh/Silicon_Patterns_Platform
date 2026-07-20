@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Newspaper } from "lucide-react";
 
 import { ConfidenceBadge } from "@/components/data/ConfidenceBadge";
 import { Badge } from "@/components/ui/Badge";
@@ -18,6 +18,15 @@ const TONE: Record<string, Tone> = {
   executive_departure: "danger",
   executive_reshuffle: "warning",
 };
+
+const PRIORITY_TONE: Record<string, Tone> = { high: "danger", medium: "warning", low: "neutral" };
+
+/** ``source`` is a feeder id, not an engine name — "blog_event" covers the Blog
+ * Crawler, company-news, AND any RSS/Google-Alerts article via the News Collection
+ * Engine. Provenance for which one is the linked article/opportunity, not this label. */
+function sourceLabel(source: string): string {
+  return source === "linkedin_history" ? "via LinkedIn" : source === "blog_event" ? "via news/article" : "";
+}
 
 /** Public: movement type → Badge tone (reused by the dashboard widget). */
 export function movementTone(type: string): Tone {
@@ -40,20 +49,26 @@ export function LeadershipSignalRow({
   showCompany = false,
   onDelete,
   onEdit,
+  onViewSource,
 }: {
   sig: LeadershipSignalOut;
   showCompany?: boolean;
   onDelete?: (signalId: string) => void;
   /** Admin-provided: opens the edit form for this signal. */
   onEdit?: (sig: LeadershipSignalOut) => void;
+  /** Opens the source article/opportunity for a news/blog-derived signal
+   *  (``sig.source_ref`` is an opportunity id for ``source === "blog_event"``). */
+  onViewSource?: (opportunityId: string) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
   const age = ageLabel(sig.event_age_days);
   const meta = [
     sig.from_title ? `was ${sig.from_title}` : "",
     showCompany && sig.company_name ? sig.company_name : "",
-    sig.source === "blog_event" ? "via Blog Crawler" : "via LinkedIn",
+    sig.geography,
+    sourceLabel(sig.source),
   ].filter(Boolean);
+  const canViewSource = Boolean(onViewSource && sig.source === "blog_event" && sig.source_ref);
 
   return (
     <div className="flex items-start gap-3 py-2.5">
@@ -64,6 +79,9 @@ export function LeadershipSignalRow({
             <span className="text-11 text-fg-subtle">{enumLabel(sig.seniority_band)}</span>
           )}
           <ConfidenceBadge confidence={sig.confidence} showLabel={false} />
+          {sig.priority_tier === "high" && (
+            <Badge tone={PRIORITY_TONE[sig.priority_tier]}>High priority</Badge>
+          )}
           {age && <span className="text-11 text-fg-subtle">· {age}</span>}
         </div>
         <div className="mt-1 truncate text-13 text-fg">
@@ -75,6 +93,16 @@ export function LeadershipSignalRow({
         )}
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        {canViewSource && (
+          <button
+            type="button"
+            onClick={() => onViewSource!(sig.source_ref)}
+            className="text-fg-subtle hover:text-accent"
+            title="View source article"
+          >
+            <Newspaper size={14} />
+          </button>
+        )}
         {sig.linkedin_url && (
           <a
             href={sig.linkedin_url}

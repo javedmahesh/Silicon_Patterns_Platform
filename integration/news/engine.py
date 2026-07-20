@@ -30,9 +30,11 @@ from integration.news.extraction import (
     extract_opportunities,
     extract_primary_company,
 )
+from integration.news.project_intel import project_priority
 from integration.resolver import CompanyResolver
 from orchestrator import provenance
 from master_db.models import (
+    Company,
     IngestionRun,
     NewsArticle,
     NewsSource,
@@ -55,6 +57,10 @@ class NewsRunMetrics:
     review_queued: int = 0
     rejected: int = 0
     errors: list[str] = field(default_factory=list)
+    # Per-source fetch/parse failures ("EE Times: HTTP 503"). A dead feed lands here so
+    # it is observable in the run notes instead of silently yielding nothing; it never
+    # fails the stage (one bad source among many is expected).
+    source_errors: list[str] = field(default_factory=list)
     notes: str = ""
 
     @property
@@ -114,18 +120,23 @@ class NewsIntelligenceEngine:
         raw_by_source = raw_by_source or {}
         rows_by_source = rows_by_source or {}
         collected: list[dict[str, Any]] = []
+        self._source_errors: list[str] = []   # read back by run() -> metrics.source_errors
         for src in sources:
             if not getattr(src, "enabled", True):
                 continue
             prev = getattr(src, "last_collected_at", None) if incremental else None
             raw = raw_by_source.get(src.id)
+            src_errors: list[str] = []
             try:
                 arts = adapters.fetch_articles(
                     src, raw=raw, rows=rows_by_source.get(src.id),
-                    incremental=(incremental and raw is None))
+                    incremental=(incremental and raw is None), errors=src_errors)
             except Exception as exc:  # isolate one bad source
                 logger.warning("[news] source %s failed: %s", getattr(src, "name", "?"), exc)
+                self._source_errors.append(f"{getattr(src, 'name', '?')}: {type(exc).__name__}")
                 continue
+            for reason in src_errors:   # dead/malformed feed — surfaced, not swallowed
+                self._source_errors.append(f"{getattr(src, 'name', '?')}: {reason}")
             kept = 0
             for a in arts:
                 if prev is not None and _published_on_or_before(a.get("published_at"), prev):
@@ -273,6 +284,14 @@ class NewsIntelligenceEngine:
                             canonical: str, title: str, published: str,
                             article: dict[str, Any], group_id: str) -> Opportunity:
         feed_row = article.get("_feed_row") or {}
+        # For a structured project event, recompute the buying-intent priority with the
+        # RESOLVED company's tier (unknown at pure-extraction time) and tag the row as
+        # PROJECT_INTEL so it's a first-class, filterable project opportunity.
+        priority_tier = sig.priority_tier
+        if sig.is_project:
+            company = self.session.get(Company, res.company_domain)
+            priority_tier = project_priority(
+                getattr(company, "company_tier", None), sig.opportunity_type, sig.geography)
         opp = Opportunity(
             opportunity_id=_opp_id(fingerprint),
             company_domain=res.company_domain,
@@ -285,7 +304,9 @@ class NewsIntelligenceEngine:
             source_type=article.get("source_type") or article.get("adapter_type") or "",
             published_date=published,
             opportunity_type=sig.opportunity_type,
-            opportunity_category="NEWS_INTEL",
+            opportunity_category="PROJECT_INTEL" if sig.is_project else "NEWS_INTEL",
+            geography=sig.geography,
+            priority_tier=priority_tier or "medium",
             summary=sig.ai_summary,
             opportunity_score=sig.opportunity_score,
             effective_opportunity_score=sig.effective_opportunity_score,
@@ -360,6 +381,7 @@ class NewsIntelligenceEngine:
             batch += self.collect(sources, raw_by_source=raw_by_source, rows_by_source=rows_by_source)
 
         m = self.ingest_articles(batch)
+        m.source_errors = getattr(self, "_source_errors", [])   # dead/broken feeds (observable)
         m.articles_new = sum(1 for _ in batch)  # collected this run
         run.status = "success" if not m.errors else "partial"
         run.finished_at = datetime.now(timezone.utc)

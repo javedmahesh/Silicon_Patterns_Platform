@@ -40,6 +40,18 @@ function fmtDuration(ms: number): string {
   return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 }
 
+// A stage that ran cleanly (status="success") but touched nothing this run reads as
+// alarming when badged "Success" next to "0 processed" — and looks identical to a real
+// failure at a glance. "Failed" stays reserved for what it already means (engine didn't
+// launch / timed out / errored, or the ingest itself errored) — this only relabels the
+// genuinely-fine "ran, found nothing new" case.
+function engineStatusDisplay(stage: ExecutionStageOut): { label: string; tone: Tone } {
+  if (stage.status === "success" && stage.processed === 0) {
+    return { label: "No new data", tone: "neutral" };
+  }
+  return { label: enumLabel(stage.status), tone: STATUS_TONE[stage.status] ?? "neutral" };
+}
+
 export function RunHistoryPage() {
   const { isManager } = useAuth();
   const [page, setPage] = useState(1);
@@ -223,7 +235,7 @@ function EngineRow({ runId, stage }: { runId: string; stage: ExecutionStageOut }
       >
         <Chevron size={14} className="shrink-0 text-fg-subtle" />
         <span className="min-w-0 flex-1 truncate text-fg">{enumLabel(stage.component)}</span>
-        <Badge tone={STATUS_TONE[stage.status] ?? "neutral"}>{enumLabel(stage.status)}</Badge>
+        <Badge tone={engineStatusDisplay(stage).tone}>{engineStatusDisplay(stage).label}</Badge>
         <span className="tabular w-24 text-right text-fg-muted">{fmtInt(stage.processed)} processed</span>
       </button>
       {open && <EngineRecords runId={runId} engine={stage.component} />}

@@ -148,12 +148,16 @@ def news_ingest(session: Session) -> IngestMetrics:
         return IngestMetrics(notes="no enabled news sources configured (seed via scripts/seed_news_sources.py)")
     m = NewsIntelligenceEngine(session, mode="pipeline").run(sources=sources)
     status = "partial" if m.errors else "success"
+    notes = (f"sources={len(sources)} collected={m.articles_collected} "
+             f"created={m.opportunities_created} merged={m.duplicates_merged}")
+    # Surface dead/broken feeds so they're diagnosable — but a failed feed is NOT a
+    # stage failure (the other sources still ran), it only annotates the run.
+    if m.source_errors:
+        notes += f" | feeds_failed={len(m.source_errors)}: " + "; ".join(m.source_errors[:5])
     return IngestMetrics(
         rows_in=m.articles_collected, rows_upserted=m.opportunities_created + m.opportunities_updated,
         rows_rejected=m.rejected, rows_review=m.review_queued, errors=list(m.errors),
-        status=status,
-        notes=(f"sources={len(sources)} collected={m.articles_collected} "
-               f"created={m.opportunities_created} merged={m.duplicates_merged}"),
+        status=status, notes=notes,
     )
 
 

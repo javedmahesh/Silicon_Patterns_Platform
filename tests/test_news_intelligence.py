@@ -112,6 +112,39 @@ def test_unknown_adapter_falls_back_to_rss():
     assert isinstance(adapters.get_adapter("nope"), adapters.RssAdapter)
 
 
+def test_malformed_feed_reports_error_but_returns_empty():
+    """A broken feed must be observable (error captured) yet never raise — one bad
+    source can't break collection."""
+    src = NewsSource(id=9, name="Broken", adapter_type="rss", publisher="Broken")
+    errs: list[str] = []
+    arts = adapters.fetch_articles(src, raw="<rss><channel><item>unterminated", errors=errs)
+    assert arts == []                      # resilient: no crash, no articles
+    assert errs and "parse error" in errs[0]   # but the failure is recorded
+
+
+def test_engine_surfaces_dead_feed_in_source_errors(session, monkeypatch):
+    """A live source whose fetch fails is recorded in metrics.source_errors (named),
+    while a healthy source in the same run still produces its opportunity."""
+    dead = NewsSource(id=20, name="Dead Feed", adapter_type="rss", url="https://dead.example/feed",
+                      publisher="Dead", enabled=True)
+    good = NewsSource(id=21, name="Good Feed", adapter_type="rss", url="https://good.example/feed",
+                      publisher="EE Times", enabled=True)
+    session.add_all([dead, good])   # FK: news_articles.source_id references these
+    session.commit()
+
+    def fake_fetch(source, *, raw=None, rows=None, incremental=True, errors=None):
+        if source.id == 20:
+            if errors is not None:
+                errors.append("URLError: connection refused")
+            return []
+        return [_article()]
+
+    monkeypatch.setattr(adapters, "fetch_articles", fake_fetch)
+    m = NewsIntelligenceEngine(session).run(sources=[dead, good])
+    assert any("Dead Feed" in e for e in m.source_errors)   # named + observable
+    assert m.opportunities_created >= 1                      # healthy source unaffected
+
+
 # ------------------------------------------------------------------ dedup
 def test_canonical_url_strips_tracking_and_scheme():
     a = dedup.canonical_url("http://www.Example.com/path/?utm_source=x&id=5#frag")
@@ -149,7 +182,10 @@ def test_multi_signal_extraction_from_one_article():
         body="Acme Inc will acquire RivalChip for $1.2 billion, open a new R&D center in India, "
              "and is hiring 200 verification engineers. CEO Jane Doe cited the RISC-V roadmap."))
     types = {s.opportunity_type for s in sigs}
-    assert {"ACQUISITION", "EXPANSION", "HIRING"} <= types
+    # "open a new R&D center" is now classified as the more precise RND_CENTER project
+    # event, which SUPERSEDES the generic EXPANSION for the same event (no redundant pair).
+    assert {"ACQUISITION", "RND_CENTER", "HIRING"} <= types
+    assert "EXPANSION" not in types
     acq = next(s for s in sigs if s.opportunity_type == "ACQUISITION")
     assert "RISC-V" in acq.technologies and "India" in acq.countries
     assert "Jane Doe" in acq.people
@@ -310,10 +346,11 @@ def test_api_change_type_and_restore(client):
 def test_api_merge_reparents_sources(client):
     items = client.get("/opportunities").json()["items"]
     acq = next(i["opportunity_id"] for i in items if i["opportunity_type"] == "ACQUISITION")
-    exp = next(i["opportunity_id"] for i in items if i["opportunity_type"] == "EXPANSION")
+    # the seed's "India R&D center" is now the precise RND_CENTER project event
+    other = next(i["opportunity_id"] for i in items if i["opportunity_type"] == "RND_CENTER")
     d = client.post(f"/opportunities/{acq}/review",
-                    json={"action": "merge", "target_opportunity_id": exp}).json()
-    assert d["merged_into"] == exp and d["lifecycle_status"] == "ARCHIVED"
+                    json={"action": "merge", "target_opportunity_id": other}).json()
+    assert d["merged_into"] == other and d["lifecycle_status"] == "ARCHIVED"
 
 
 def test_api_change_type_requires_new_type(client):
