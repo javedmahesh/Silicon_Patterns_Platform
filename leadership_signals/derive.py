@@ -289,18 +289,31 @@ def _reshuffles(signals: list[dict], now_ym: tuple[int, int]) -> list[dict]:
 # --------------------------------------------------------------------------- #
 _PERSON = r"([A-Z][\w.'-]+(?:\s+[A-Z][\w.'-]+){0,3})"
 _ROLE = r"([A-Za-z][\w /&-]{2,40})"
+# Every literal verb/connector is wrapped in a SCOPED case-insensitive group `(?i:…)`
+# rather than compiling the whole pattern with re.I: real headlines are Title Case
+# ("Acme Appoints Jane Doe As Its New CTO"), but `_PERSON`'s `[A-Z]` anchor must stay
+# case-SENSITIVE or "the company appoints a new ceo" would extract "the" as a person.
+_AS = r"(?i:\s+as\s+)"
+_QUAL = r"(?i:its\s+|the\s+|new\s+|interim\s+)*"     # "as its new interim CTO"
 _LEAD_PATTERNS: list[tuple[re.Pattern, str]] = [
-    (re.compile(rf"\bappoints?\s+{_PERSON}\s+as\s+(?:its\s+|the\s+|new\s+|interim\s+)*{_ROLE}"), "new_executive_hire"),
-    (re.compile(rf"\bnames?\s+{_PERSON}\s+as\s+(?:its\s+|the\s+|new\s+)*{_ROLE}"), "new_executive_hire"),
-    (re.compile(rf"\bhires?\s+{_PERSON}\s+as\s+(?:its\s+|the\s+|new\s+)*{_ROLE}"), "new_executive_hire"),
-    (re.compile(rf"{_PERSON}\s+(?:is\s+)?hired\s+as\s+(?:the\s+|its\s+|new\s+)*{_ROLE}"), "new_executive_hire"),
-    (re.compile(rf"{_PERSON}\s+joins\b[^.]*?\bas\s+(?:the\s+|its\s+|new\s+)*{_ROLE}"), "new_executive_hire"),
-    (re.compile(rf"{_PERSON}\s+(?:moves|moved|jumps)\s+(?:from\s+[\w\s&.,-]+?\s+)?to\s+[\w\s&.,-]+?\s+as\s+"
-                rf"(?:the\s+|its\s+|new\s+)*{_ROLE}"), "new_executive_hire"),
-    (re.compile(rf"{_PERSON}\s+(?:is\s+)?promoted\s+to\s+{_ROLE}"), "promotion"),
-    (re.compile(rf"\bpromotes?\s+{_PERSON}\s+to\s+{_ROLE}"), "promotion"),
-    (re.compile(rf"{_PERSON}\s+(?:steps down|departs|resigns|to step down)(?:\s+as\s+{_ROLE})?"), "executive_departure"),
-    (re.compile(rf"\b(?:appoints?|names?|elects?)\s+{_PERSON}\s+to\s+(?:its|the)\s+board\b"), "board_appointment"),
+    (re.compile(rf"\b(?i:appoints?)\s+{_PERSON}{_AS}{_QUAL}{_ROLE}"), "new_executive_hire"),
+    (re.compile(rf"\b(?i:names?)\s+{_PERSON}{_AS}{_QUAL}{_ROLE}"), "new_executive_hire"),
+    (re.compile(rf"\b(?i:hires?)\s+{_PERSON}{_AS}{_QUAL}{_ROLE}"), "new_executive_hire"),
+    (re.compile(rf"{_PERSON}\s+(?i:is\s+)?(?i:hired){_AS}{_QUAL}{_ROLE}"), "new_executive_hire"),
+    # "… has been appointed (as) CTO" — the passive form, as common in headlines as the
+    # active. The auxiliary is REQUIRED: it forces `_PERSON` (greedy, and "Has Been" is
+    # itself Title Case) to backtrack off the auxiliary instead of swallowing it.
+    (re.compile(rf"{_PERSON}\s+(?i:(?:has\s+been|is|was)\s+appointed)(?i:\s+as)?\s+{_QUAL}{_ROLE}"),
+     "new_executive_hire"),
+    (re.compile(rf"{_PERSON}\s+(?i:joins|joined)\b[^.]*?\b(?i:as)\s+{_QUAL}{_ROLE}"), "new_executive_hire"),
+    (re.compile(rf"{_PERSON}\s+(?i:moves|moved|jumps)\s+(?i:from\s+)?(?:[\w\s&.,-]+?\s+)?(?i:to)\s+"
+                rf"[\w\s&.,-]+?{_AS}{_QUAL}{_ROLE}"), "new_executive_hire"),
+    (re.compile(rf"{_PERSON}\s+(?i:is\s+)?(?i:promoted\s+to)\s+{_ROLE}"), "promotion"),
+    (re.compile(rf"\b(?i:promotes?)\s+{_PERSON}\s+(?i:to)\s+{_ROLE}"), "promotion"),
+    (re.compile(rf"{_PERSON}\s+(?i:steps down|departs|resigns|to step down|is stepping down)"
+                rf"(?:{_AS}{_ROLE})?"), "executive_departure"),
+    (re.compile(rf"\b(?i:appoints?|names?|elects?)\s+{_PERSON}\s+(?i:to\s+(?:its|the)\s+board)\b"),
+     "board_appointment"),
 ]
 # Roles extracted from free text can trail into geography/time ("VP Engineering in
 # Bengaluru", "CTO effective March") — strip that so the title stays clean; the
@@ -338,18 +351,26 @@ _BLOG_LEADERSHIP_TYPES = ("Leadership Change", "LEADERSHIP_CHANGE", "EXECUTIVE_H
 _NEWS_TYPES = frozenset({"LEADERSHIP_CHANGE", "EXECUTIVE_HIRE", "ROLE_CHANGE"})
 
 
-def _from_news_signal(opp) -> tuple[str, str, str, str] | None:
-    """Parse a Change_03 company-news row's structured ``company_news_signal`` into
-    ``(person, from_title, to_title, movement_type)`` — far more reliable than the
-    free-text regex because the format is known. Returns ``None`` if it can't."""
-    sig = (opp.company_news_signal or "").strip()
+def _from_news_signal(opp, sig: str | None = None) -> tuple[str, str, str, str] | None:
+    """Parse the structured people-move form into ``(person, from_title, to_title,
+    movement_type)`` — far more reliable than the free-text regex because the format
+    is known. Returns ``None`` if it can't.
+
+    ``sig`` defaults to the Change_03 ``company_news_signal`` column, but the caller
+    may pass any candidate string (the News Collection Engine never populates that
+    column — for feeds that carry the structured form the headline itself IS the
+    signal). Returns ``None`` rather than guessing, so a non-structured string simply
+    falls through to the free-text extractor."""
+    sig = (sig if sig is not None else (opp.company_news_signal or "")).strip()
     if not sig:
         return None
     if opp.opportunity_type == "EXECUTIVE_HIRE":
-        m = re.match(r"^(.+?)\s+joined(?:\s+as\s+(.+?))?(?:\s+\(ex-.*\))?$", sig)
+        # The role must come from an explicit "as <role>" — never fall back to the
+        # whole headline, which would fabricate a title once `sig` IS the headline.
+        m = re.match(r"^(.+?)\s+joined\s+as\s+(.+?)(?:\s+\(ex-.*\))?$", sig, re.I)
         if not m:
             return None
-        return _clean(m.group(1)), "", _clean(m.group(2) or opp.article_title or ""), "new_executive_hire"
+        return _clean(m.group(1)), "", _clean(m.group(2)), "new_executive_hire"
     # LEADERSHIP_CHANGE / ROLE_CHANGE: "Person: From -> To (from X)" or "Person -> To"
     if "->" in sig:
         left, right = sig.split("->", 1)
@@ -425,7 +446,11 @@ def from_blog_events(session: Session, *, now: datetime | None = None) -> list[d
     )
     for opp in rows:
         eff = _published_ym(opp.published_date)
-        parsed = _from_news_signal(opp) if opp.opportunity_type in _NEWS_TYPES else None
+        # company_news_signal first (populated only by the company-news ingestor); then
+        # the headline, because a News-Collection-Engine row leaves that column empty yet
+        # often carries the same structured form in its title ("A: X -> Y", "A joined as Y").
+        sig = (opp.company_news_signal or "").strip() or (opp.article_title or "")
+        parsed = _from_news_signal(opp, sig) if opp.opportunity_type in _NEWS_TYPES else None
         if parsed is not None:
             person, from_title, to_title, mtype = parsed
             if classify_seniority(to_title) is None:   # below director+ → out of scope

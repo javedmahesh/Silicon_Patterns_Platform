@@ -62,38 +62,77 @@ class RunInProgress(Exception):
 class _RunLock:
     """Best-effort mutual exclusion for a Standard Run. Postgres: a session-level
     advisory lock (survives across processes/instances). Otherwise: a process-local
-    lock. Both are non-blocking — if not acquired, the run is refused."""
+    lock. Both are non-blocking — if not acquired, the run is refused.
+
+    A Postgres session-level advisory lock is owned by the PHYSICAL connection that
+    took it, so this holds a DEDICATED connection checked out for the whole protected
+    run and does lock/unlock on that one connection. The ORM ``session``'s connection
+    cannot be used: a Session returns its connection to the pool at every commit (and
+    a Standard Run commits many times), so a later ``pg_advisory_unlock`` would very
+    likely run on a DIFFERENT pooled connection, silently no-op, and strand the lock
+    until the owning connection was recycled — long enough to make the next 03:30 /
+    15:30 UTC slot skip itself with RunInProgress.
+
+    The dedicated connection runs in AUTOCOMMIT so it sits ``idle`` rather than
+    ``idle in transaction`` for the run's duration: an idle-in-transaction backend is
+    exactly what a server-side ``idle_in_transaction_session_timeout`` kills, and
+    killing it mid-run would release the lock while the run was still going.
+    """
 
     def __init__(self, session: Session) -> None:
         self.session = session
         self._is_pg = session.get_bind().dialect.name == "postgresql"
         self._local_held = False
-        self._pg_held = False
+        self._conn = None   # the dedicated Connection that OWNS the advisory lock
 
     def __enter__(self) -> "_RunLock":
         if not _local_lock.acquire(blocking=False):
             raise RunInProgress("another Standard Run is already in progress (this process)")
         self._local_held = True
         if self._is_pg:
-            got = self.session.execute(
-                text("SELECT pg_try_advisory_lock(:k)"), {"k": _ADVISORY_LOCK_KEY}
-            ).scalar()
+            # .engine resolves to itself on an Engine and to the owning Engine on a
+            # Connection-bound Session, so this is correct for either binding.
+            engine = self.session.get_bind().engine
+            conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+            try:
+                got = conn.execute(
+                    text("SELECT pg_try_advisory_lock(:k)"), {"k": _ADVISORY_LOCK_KEY}
+                ).scalar()
+            except Exception:
+                conn.close()
+                self._release_local()
+                raise
             if not got:
-                _local_lock.release()
-                self._local_held = False
+                conn.close()
+                self._release_local()
                 raise RunInProgress("another Standard Run is already in progress (cluster)")
-            self._pg_held = True
+            self._conn = conn
         return self
 
     def __exit__(self, *exc) -> None:
-        if self._pg_held:
+        # Runs on every exit path: success, partial, a handled stage failure, and an
+        # exception propagating out of the `with` body.
+        conn, self._conn = self._conn, None
+        if conn is not None:
             try:
-                self.session.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _ADVISORY_LOCK_KEY})
-                self.session.commit()
-            except Exception:  # pragma: no cover - unlock is best-effort
-                logger.warning("failed to release advisory lock", exc_info=True)
+                conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _ADVISORY_LOCK_KEY})
+                conn.close()
+            except Exception:
+                # The unlock itself failed (dead/broken connection). close() would return
+                # a still-locked connection to the pool; invalidate() drops the physical
+                # connection instead, which ends its Postgres backend and therefore
+                # releases every advisory lock it held. Never leave the lock stranded.
+                logger.warning("advisory unlock failed — invalidating the connection", exc_info=True)
+                try:
+                    conn.invalidate()
+                finally:
+                    conn.close()
+        self._release_local()
+
+    def _release_local(self) -> None:
         if self._local_held:
             _local_lock.release()
+            self._local_held = False
 
 
 def _platform_totals(session: Session) -> dict[str, int]:

@@ -85,6 +85,175 @@ def test_overlap_prevention_refuses_second_run(session):
     assert execution.status == "success"
 
 
+def test_local_lock_released_when_run_body_raises(session):
+    """SQLite/local path: an exception propagating out of the run must not strand the
+    process-local lock (the next run would be refused forever)."""
+    settings = Settings(**OFF)
+    with pytest.raises(RuntimeError):
+        with standard_run._RunLock(session):
+            raise RuntimeError("boom")
+    assert standard_run._local_lock.acquire(blocking=False)   # was released
+    standard_run._local_lock.release()
+    execution, _ = execute_standard_run(session, settings, components=["scoring"])
+    assert execution.status == "success"
+
+
+def test_manual_and_scheduled_runs_are_mutually_exclusive(session):
+    """Both triggers go through the identical _RunLock, so one blocks the other."""
+    settings = Settings(**OFF)
+    with standard_run._RunLock(session):                       # a scheduled run in flight
+        with pytest.raises(RunInProgress):
+            execute_standard_run(session, settings, trigger="manual", components=["scoring"])
+    # …and the reverse, once the lock is free
+    execution, _ = execute_standard_run(session, settings, trigger="scheduled", slot="03:30",
+                                        components=["scoring"], notify=False)
+    assert execution.status == "success"
+
+
+# ---------------------------------------------- Postgres advisory-lock ownership
+# A session-level advisory lock belongs to the PHYSICAL connection that took it. The
+# ORM Session releases its connection on every commit (a Standard Run commits many
+# times), so lock and unlock must NOT ride on the Session — these fakes fail loudly
+# if they ever do.
+class _FakeResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar(self):
+        return self._value
+
+
+class _FakeConn:
+    """Records every statement executed on THIS physical connection."""
+
+    def __init__(self, engine, acquired: bool = True, unlock_raises: bool = False):
+        self.engine = engine
+        self.acquired = acquired
+        self.unlock_raises = unlock_raises
+        self.statements: list[str] = []
+        self.closed = False
+        self.invalidated = False
+        self.options: dict = {}
+
+    def execution_options(self, **kw):
+        self.options.update(kw)
+        return self
+
+    def execute(self, stmt, params=None):
+        sql = str(stmt)
+        self.statements.append(sql)
+        if "pg_try_advisory_lock" in sql:
+            return _FakeResult(1 if self.acquired else 0)
+        if "pg_advisory_unlock" in sql and self.unlock_raises:
+            raise RuntimeError("connection is dead")
+        return _FakeResult(None)
+
+    def close(self):
+        self.closed = True
+
+    def invalidate(self):
+        self.invalidated = True
+
+
+class _FakeEngine:
+    def __init__(self, acquired: bool = True, unlock_raises: bool = False):
+        self.dialect = type("D", (), {"name": "postgresql"})()
+        self.handed_out: list[_FakeConn] = []
+        self._acquired = acquired
+        self._unlock_raises = unlock_raises
+
+    @property
+    def engine(self):
+        return self
+
+    def connect(self):
+        conn = _FakeConn(self, self._acquired, self._unlock_raises)
+        self.handed_out.append(conn)
+        return conn
+
+
+class _FakeSession:
+    """A Session that would hand back a DIFFERENT connection every time — so any use
+    of the Session for lock/unlock shows up as a cross-connection bug."""
+
+    def __init__(self, engine):
+        self._engine = engine
+        self.statements: list[str] = []
+
+    def get_bind(self):
+        return self._engine
+
+    def execute(self, stmt, params=None):
+        self.statements.append(str(stmt))
+        return _FakeResult(None)
+
+    def commit(self):
+        pass
+
+
+def test_pg_lock_and_unlock_use_the_same_dedicated_connection():
+    engine = _FakeEngine()
+    session = _FakeSession(engine)
+    with standard_run._RunLock(session):
+        assert len(engine.handed_out) == 1
+        conn = engine.handed_out[0]
+        assert any("pg_try_advisory_lock" in s for s in conn.statements)
+        assert not conn.closed                    # held for the whole protected run
+        assert conn.options.get("isolation_level") == "AUTOCOMMIT"   # never idle-in-transaction
+    conn = engine.handed_out[0]
+    # exactly ONE connection was ever used, and it did both halves
+    assert len(engine.handed_out) == 1
+    assert [("pg_try_advisory_lock" in s, "pg_advisory_unlock" in s) for s in conn.statements] \
+        == [(True, False), (False, True)]
+    assert conn.closed and not conn.invalidated
+    assert session.statements == []               # the ORM Session never touched the lock
+
+
+def test_pg_lock_released_on_propagated_exception():
+    engine = _FakeEngine()
+    with pytest.raises(RuntimeError):
+        with standard_run._RunLock(_FakeSession(engine)):
+            raise RuntimeError("stage blew up")
+    conn = engine.handed_out[0]
+    assert any("pg_advisory_unlock" in s for s in conn.statements) and conn.closed
+    assert standard_run._local_lock.acquire(blocking=False)
+    standard_run._local_lock.release()
+
+
+def test_pg_lock_contention_raises_run_in_progress_and_frees_everything():
+    """Another process holds it → RunInProgress, and this process leaks nothing."""
+    engine = _FakeEngine(acquired=False)
+    with pytest.raises(RunInProgress):
+        with standard_run._RunLock(_FakeSession(engine)):
+            pytest.fail("body must not run")
+    conn = engine.handed_out[0]
+    assert conn.closed                                        # connection returned
+    assert not any("pg_advisory_unlock" in s for s in conn.statements)   # never held it
+    assert standard_run._local_lock.acquire(blocking=False)   # local lock released too
+    standard_run._local_lock.release()
+
+
+def test_pg_connection_invalidated_when_unlock_fails():
+    """If unlock can't run, the physical connection is dropped — ending its Postgres
+    backend and with it every advisory lock — rather than returned still-locked."""
+    engine = _FakeEngine(unlock_raises=True)
+    with standard_run._RunLock(_FakeSession(engine)):
+        pass
+    conn = engine.handed_out[0]
+    assert conn.invalidated and conn.closed
+    assert standard_run._local_lock.acquire(blocking=False)
+    standard_run._local_lock.release()
+
+
+def test_lock_is_reacquirable_immediately_after_a_run(session):
+    """No cooldown/stranding: the very next run acquires cleanly."""
+    settings = Settings(**OFF)
+    first, _ = execute_standard_run(session, settings, components=["scoring"])
+    second, _ = execute_standard_run(session, settings, components=["scoring"])
+    assert first.status == "success" and second.status == "success"
+    assert first.run_id != second.run_id
+
+
 # ------------------------------------------------------------- notifications
 def _add_users(s):
     rows = [
