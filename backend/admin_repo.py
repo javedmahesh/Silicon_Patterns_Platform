@@ -294,10 +294,6 @@ def get_api_key(session: Session, key_id: int) -> ApiKey | None:
     return session.get(ApiKey, key_id)
 
 
-def get_api_key_by_hash(session: Session, key_hash: str) -> ApiKey | None:
-    return session.scalar(select(ApiKey).where(ApiKey.key_hash == key_hash))
-
-
 def list_api_keys(session: Session, *, owner_id: int | None = None, status: str | None = None) -> list[ApiKey]:
     q = select(ApiKey)
     if owner_id is not None:

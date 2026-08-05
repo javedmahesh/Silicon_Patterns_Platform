@@ -18,7 +18,7 @@ from backend.config import Settings
 from backend.dependencies import Pagination
 from backend.scheduler_config import read_config, write_config
 from backend.schemas import ExecutionOut, Page, RunNowResult, SchedulerStatusOut
-from backend.standard_run import RunInProgress, execute_standard_run
+from backend.standard_run import RunInProgress, execute_standard_run, stale_running_cutoff
 from master_db.models import PipelineExecution
 
 logger = logging.getLogger("backend.scheduler_service")
@@ -33,8 +33,17 @@ def _notify_configured(settings: Settings) -> bool:
 
 
 def _run_in_progress(session: Session) -> bool:
+    """A run row is only "in progress" if it is also recent enough to still be alive.
+
+    Without the cutoff a run killed mid-flight leaves status='running' forever and this
+    answers True for good, permanently disabling "Run now" and showing a phantom run in
+    the UI. Overlap itself is prevented by the advisory lock in standard_run, not here.
+    """
     return session.scalar(
-        select(func.count()).select_from(PipelineExecution).where(PipelineExecution.status == "running")
+        select(func.count()).select_from(PipelineExecution).where(
+            PipelineExecution.status == "running",
+            PipelineExecution.started_at >= stale_running_cutoff(),
+        )
     ) > 0
 
 

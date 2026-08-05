@@ -48,6 +48,9 @@ from config.enums import (
     AUDIT_CATEGORIES,
     COMPLIANCE_RECORD_TYPES,
     COMPLIANCE_STATUSES,
+    DISCOVERY_CANDIDATE_STATUSES,
+    MARKET_INTELLIGENCE_PRIORITIES,
+    NOTIFICATION_DELIVERY_STATUSES,
     ORG_UNIT_MEMBER_ROLES,
     ORG_UNIT_TYPES,
     SECURITY_POLICY_TYPES,
@@ -1343,6 +1346,164 @@ class PipelineRun(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
 
 
+class DiscoveryCandidateRecord(Base):
+    """A potential market entrant surfaced by the Market Discovery Engine.
+
+    A candidate is NOT a company. It may be unresolved, below the confidence
+    threshold, or later rejected — writing every sighting into ``companies`` would
+    fill the canonical table with speculative rows. This table is the engine's
+    cross-run memory: it is how a nightly run distinguishes "new" from "seen
+    yesterday", which no existing table records.
+
+    Promotion to a real company still goes through the existing
+    ``integration.resolver.CompanyResolver``, and provenance is recorded in the
+    existing ``company_sources`` — discovery adds no parallel company model.
+
+    ``candidate_key`` is the engine's deterministic identity (domain → LinkedIn slug
+    → comparison name, hashed), so the same company always lands on the same row
+    regardless of which source reported it.
+    """
+
+    __tablename__ = "discovery_candidates"
+    __table_args__ = (
+        CheckConstraint(_in("status", DISCOVERY_CANDIDATE_STATUSES), name="ck_discovery_status"),
+        Index("ix_discovery_candidates_status", "status"),
+        Index("ix_discovery_candidates_domain", "company_domain"),
+        Index("ix_discovery_candidates_last_seen", "last_seen"),
+        Index("ix_discovery_candidates_run", "run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    candidate_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    company_name: Mapped[str] = mapped_column(String(255), default="")
+    # Not a FK: a candidate usually has no company row yet, and must survive one
+    # being merged or removed.
+    company_domain: Mapped[str] = mapped_column(String(255), default="")
+    website: Mapped[str] = mapped_column(String(512), default="")
+    linkedin_url: Mapped[str] = mapped_column(String(512), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    industry: Mapped[str] = mapped_column(String(120), default="")
+    headquarters: Mapped[str] = mapped_column(String(255), default="")
+    country: Mapped[str] = mapped_column(String(120), default="")
+    founded_year: Mapped[str] = mapped_column(String(8), default="")
+    employee_count: Mapped[str] = mapped_column(String(40), default="")
+    funding_stage: Mapped[str] = mapped_column(String(60), default="")
+    # JSON-encoded text, not a JSON column: identical behaviour on SQLite and
+    # Postgres, and the engine never queries inside these.
+    technologies: Mapped[str] = mapped_column(Text, default="[]")
+    markets: Mapped[str] = mapped_column(Text, default="[]")
+    source: Mapped[str] = mapped_column(String(60), default="")
+    source_id: Mapped[str] = mapped_column(String(255), default="")
+    source_url: Mapped[str] = mapped_column(String(512), default="")
+    sources: Mapped[str] = mapped_column(Text, default="[]")     # every corroborating source
+    status: Mapped[str] = mapped_column(String(20), default="new")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    times_seen: Mapped[int] = mapped_column(Integer, default=1)
+    run_id: Mapped[str] = mapped_column(String(80), default="")
+    raw_payload: Mapped[str] = mapped_column(Text, default="{}")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class MarketIntelligenceRecord(Base):
+    """What the Market Intelligence Layer concluded about one discovered candidate.
+
+    Separate from ``discovery_candidates`` on purpose. That table is the discovery
+    engine's memory of *what was seen*; this one holds the *interpretation* — and the
+    two change for different reasons. A rule-pack change re-derives every row here
+    while touching nothing there, and a re-crawl updates candidates without
+    invalidating an interpretation that is still correct.
+
+    Keyed by ``candidate_key``, the discovery engine's deterministic identity, so an
+    interpretation always lands on the same row no matter which source reported the
+    company. Not a foreign key, for the same reason the candidate's own domain is
+    not: intelligence must survive its candidate being merged or re-keyed.
+
+    ``priority`` and ``priority_score`` are columns rather than JSON because that is
+    what the executive dashboard and lead scoring filter and rank on. Everything
+    else — classifications, technologies, signals, factors, reasons — is JSON-encoded
+    text: identical behaviour on SQLite (dev/tests) and Postgres, and nothing queries
+    inside them.
+    """
+
+    __tablename__ = "market_intelligence"
+    __table_args__ = (
+        CheckConstraint(_in("priority", MARKET_INTELLIGENCE_PRIORITIES),
+                        name="ck_market_intelligence_priority"),
+        Index("ix_market_intelligence_priority", "priority"),
+        Index("ix_market_intelligence_domain", "company_domain"),
+        Index("ix_market_intelligence_evaluated", "evaluated_at"),
+        Index("ix_market_intelligence_run", "run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    candidate_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    company_name: Mapped[str] = mapped_column(String(255), default="")
+    company_domain: Mapped[str] = mapped_column(String(255), default="")
+    website: Mapped[str] = mapped_column(String(512), default="")
+    source: Mapped[str] = mapped_column(String(60), default="")
+    # The strongest (most specific) category, or "" when nothing matched — an
+    # unclassifiable company is a real, reviewable state, never labelled "Other".
+    primary_classification: Mapped[str] = mapped_column(String(120), default="")
+    classifications: Mapped[str] = mapped_column(Text, default="[]")
+    technologies: Mapped[str] = mapped_column(Text, default="[]")
+    signals: Mapped[str] = mapped_column(Text, default="[]")
+    signal_types: Mapped[str] = mapped_column(Text, default="[]")
+    classification_count: Mapped[int] = mapped_column(Integer, default=0)
+    technology_count: Mapped[int] = mapped_column(Integer, default=0)
+    signal_count: Mapped[int] = mapped_column(Integer, default=0)
+    priority: Mapped[str] = mapped_column(String(12), default="low")
+    priority_score: Mapped[float] = mapped_column(Float, default=0.0)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    factors: Mapped[str] = mapped_column(Text, default="[]")
+    reasons: Mapped[str] = mapped_column(Text, default="[]")
+    explanation: Mapped[str] = mapped_column(Text, default="")
+    # Which rules produced this row. A stored priority is only reproducible against
+    # the pack version that assigned it.
+    rule_pack: Mapped[str] = mapped_column(String(60), default="")
+    rule_pack_version: Mapped[str] = mapped_column(String(40), default="")
+    enrichment: Mapped[str] = mapped_column(Text, default="{}")
+    run_id: Mapped[str] = mapped_column(String(80), default="")
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class NotificationDelivery(Base):
+    """One delivery attempt of one notification to one recipient.
+
+    Written by :mod:`backend.notifications.service` for every recipient on every
+    channel — the audit trail behind ``pipeline_executions.notification_status``,
+    which only carries the run-level rollup. Kept channel-neutral (``provider`` is a
+    free string) so Teams/Slack/webhook deliveries land in the same table.
+
+    ``run_id`` is a plain string, not a FK: notifications are also emitted for events
+    that have no ``pipeline_executions`` row (a run that crashed before insert), and a
+    delivery record must survive its run being pruned.
+    """
+
+    __tablename__ = "notification_deliveries"
+    __table_args__ = (
+        CheckConstraint(_in("status", NOTIFICATION_DELIVERY_STATUSES), name="ck_notif_delivery_status"),
+        Index("ix_notif_delivery_run", "run_id"),
+        Index("ix_notif_delivery_created", "created_at"),
+        Index("ix_notif_delivery_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(80), default="")
+    event_type: Mapped[str] = mapped_column(String(40), default="run_summary")
+    channel: Mapped[str] = mapped_column(String(20), default="email")
+    provider: Mapped[str] = mapped_column(String(40), default="")
+    recipient: Mapped[str] = mapped_column(String(320), default="")
+    audience: Mapped[str] = mapped_column(String(10), default="all")
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class PipelineExecution(Base):
     """Run-level record of one Standard Run — a full ``run all`` fired by the
     scheduler (trigger='scheduled') or manually (trigger='manual').
@@ -1929,7 +2090,11 @@ class EmailConversation(Base):
         ForeignKey("decision_makers.id", ondelete="SET NULL"), nullable=True
     )
     subject: Mapped[str] = mapped_column(String(1000), default="")
-    thread_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    # No index=True here: __table_args__ already declares ix_email_conv_thread on this
+    # column, and that named index is the only one the migration creates. Both together
+    # made create_all() (SQLite/dev/tests) build a second, identical index that
+    # production has never had — model/migration drift, and a double write on insert.
+    thread_id: Mapped[str] = mapped_column(String(80), default="")
     folder: Mapped[str] = mapped_column(String(20), default="inbox")
     message_count: Mapped[int] = mapped_column(Integer, default=0)
     unread_count: Mapped[int] = mapped_column(Integer, default=0)

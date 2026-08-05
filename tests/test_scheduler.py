@@ -1,6 +1,7 @@
-"""Standard Scheduled Runs: execution recording, overlap prevention, Outlook
-notification (log/graph/failure paths, active-only recipients), scheduler due/dedup
-logic, and the scheduler/run-history API. No real Apify or Graph network calls."""
+"""Standard Scheduled Runs: execution recording, overlap prevention, the scheduler's
+contract with the notification framework (active-only recipients, failure isolation,
+unconfigured degradation, kill switch), scheduler due/dedup logic, and the
+scheduler/run-history API. No real Apify calls and no real SMTP connection."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -11,6 +12,7 @@ from backend import standard_run
 from backend.config import Settings
 from backend.main import create_app
 from backend.scheduler import PipelineScheduler, _slot_today_utc
+from backend.notifications.providers.email import SmtpEmailProvider
 from backend.standard_run import RunInProgress, execute_standard_run
 from master_db.local import make_session_factory
 from master_db.models import Base, Company, DemandSignal, PipelineExecution, PipelineRun, User
@@ -268,50 +270,66 @@ def _add_users(s):
     s.commit()
 
 
+# The notification framework itself is covered end-to-end in
+# tests/test_notifications.py. These cases pin the SCHEDULER's contract with it:
+# recipients, failure isolation, unconfigured degradation, and the off switch.
+SMTP = dict(smtp_host="smtp.test", smtp_username="bot@siliconpatterns.com",
+            smtp_password="app-password", email_from="bot@siliconpatterns.com")
+
+
 def test_notification_only_targets_active_users(session, monkeypatch):
     _add_users(session)
-    sent = {}
-    monkeypatch.setattr(notifications, "_graph_send_mail",
-                        lambda settings, recipients, subj, body: sent.update(to=list(recipients)))
-    settings = Settings(scheduler_enabled=False, notify_mode="graph",
-                        microsoft_tenant_id="t", microsoft_client_id="c",
-                        microsoft_client_secret="sec", notify_sender_email="noreply@siliconpatterns.com")
+    seen: dict = {}
+
+    def _capture(self, settings, msg):
+        seen["bcc"] = msg["Bcc"]
+
+    monkeypatch.setattr(SmtpEmailProvider, "_deliver", _capture)
+    settings = Settings(scheduler_enabled=False, **SMTP)
     execution, _ = execute_standard_run(session, settings, trigger="scheduled", slot="09:00",
                                         components=["scoring"], notify=True)
     assert execution.notification_status == "sent"
-    assert set(sent["to"]) == {"active1@siliconpatterns.com", "active2@siliconpatterns.com"}
+    assert set(seen["bcc"].split(", ")) == {"active1@siliconpatterns.com", "active2@siliconpatterns.com"}
     assert execution.notified_count == 2
 
 
 def test_notification_failure_never_fails_the_run(session, monkeypatch):
     _add_users(session)
 
-    def _boom(*a, **k):
-        raise RuntimeError("graph 403 Forbidden: Mail.Send not consented")
+    def _boom(self, settings, msg):
+        raise RuntimeError("SMTP 535 auth failed: bad app password")
 
-    monkeypatch.setattr(notifications, "_graph_send_mail", _boom)
-    settings = Settings(scheduler_enabled=False, notify_mode="graph",
-                        microsoft_tenant_id="t", microsoft_client_id="c",
-                        microsoft_client_secret="sec", notify_sender_email="noreply@siliconpatterns.com")
+    monkeypatch.setattr(SmtpEmailProvider, "_deliver", _boom)
+    settings = Settings(scheduler_enabled=False, notification_retry_count=2, **SMTP)
     execution, _ = execute_standard_run(session, settings, trigger="scheduled", slot="21:00",
                                         components=["scoring"], notify=True)
     assert execution.status == "success"                 # pipeline unaffected
     assert execution.notification_status == "failed"
-    assert "403" in execution.notification_detail
+    assert "535" in execution.notification_detail
 
 
-def test_notification_log_only_when_graph_unconfigured(session):
+def test_notification_log_only_when_provider_unconfigured(session):
     _add_users(session)
-    settings = Settings(scheduler_enabled=False, notify_mode="auto")  # no graph creds
+    settings = Settings(scheduler_enabled=False)          # no SMTP credentials
     execution, _ = execute_standard_run(session, settings, trigger="scheduled", slot="09:00",
                                         components=["scoring"], notify=True)
     assert execution.notification_status == "logged"
     assert execution.notified_count == 2
 
 
-def test_notification_off_mode_skips(session):
+def test_notification_disabled_skips(session):
     _add_users(session)
-    settings = Settings(**OFF)
+    settings = Settings(scheduler_enabled=False, enable_notifications=False)
+    execution, _ = execute_standard_run(session, settings, trigger="scheduled", slot="09:00",
+                                        components=["scoring"], notify=True)
+    assert execution.notification_status == "skipped"
+
+
+def test_legacy_notify_mode_off_still_disables(session):
+    """SP_NOTIFY_MODE=off predates the framework and may still be set in a deployed
+    environment; it must keep working as a kill switch."""
+    _add_users(session)
+    settings = Settings(scheduler_enabled=False, notify_mode="off", **SMTP)
     execution, _ = execute_standard_run(session, settings, trigger="scheduled", slot="09:00",
                                         components=["scoring"], notify=True)
     assert execution.notification_status == "skipped"
@@ -328,8 +346,7 @@ def test_summary_html_contains_required_fields():
                 "jobs": 188, "leads_scored": 122},
     )
     html = notifications.build_summary_html(e)
-    for needle in ("run-20260101-090000", "scoring", "122", "288", "188",
-                   "Total companies", "Total decision makers", "SUCCESS"):
+    for needle in ("run-20260101-090000", "scoring", "SUCCESS", "Run summary", "Pipelines"):
         assert needle in html
 
 

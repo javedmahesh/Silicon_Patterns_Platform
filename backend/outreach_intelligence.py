@@ -8,18 +8,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from functools import lru_cache
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend import dm_intelligence as dmi
 from backend import repositories as repo
 from backend import outreach_repo as orepo
-from master_db.models import (
-    Company, DecisionMaker, LeadScore, LeadershipSignal, Opportunity,
-    OutreachLead, OutreachMessage, OutreachMeeting, OutreachTask,
-)
+from master_db.models import LeadershipSignal, Opportunity, OutreachLead, OutreachMessage
 
 from backend.timeutil import utcnow as _utcnow
 
@@ -51,15 +47,20 @@ def recommend_contacts(session: Session, company_domain: str, limit: int = 3) ->
     lead = orepo.get_lead_by_domain(session, company_domain)
     now = _utcnow()
 
-    scored = []
-    for dm in dms:
-        if not (dm.work_email or "").strip():
-            continue
+    # All messages for this company's contacts in one query — this used to be one
+    # query per decision maker, so a company with 40 contacts issued 40 round trips.
+    contactable = [dm for dm in dms if (dm.work_email or "").strip()]
+    msgs_by_dm: dict[int, list[OutreachMessage]] = {}
+    if contactable:
+        for m in session.scalars(select(OutreachMessage).where(
+            OutreachMessage.decision_maker_id.in_([dm.id for dm in contactable])
+        )):
+            msgs_by_dm.setdefault(m.decision_maker_id, []).append(m)
 
+    scored = []
+    for dm in contactable:
         intel = dmi.compute(dm, ctx)
-        msgs = list(session.scalars(
-            select(OutreachMessage).where(OutreachMessage.decision_maker_id == dm.id)
-        ))
+        msgs = msgs_by_dm.get(dm.id, [])
 
         # Relationship strength
         rel_pts = 0.0

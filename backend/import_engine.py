@@ -25,7 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from config.enums import IMPORT_STAGES
-from integration.normalizer import canonical_company_id, name_key, normalize_domain
+from integration.normalizer import canonical_company_id, name_key
 from master_db.models import Company, DecisionMaker, ImportJob
 from sync.linkedin import canonical_linkedin_url
 from sync.normalization import COMPANY_OWNED_FIELDS, DM_OWNED_FIELDS

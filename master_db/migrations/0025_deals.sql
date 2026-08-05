@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS crm_pipelines (
 
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename='crm_pipelines' AND indexname='ix_crm_pipelines_active') THEN
-        CREATE INDEX ix_crm_pipelines_active ON crm_pipelines(is_active);
+        CREATE INDEX IF NOT EXISTS ix_crm_pipelines_active ON crm_pipelines(is_active);
     END IF;
 END $$;
 
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS crm_pipeline_stages (
 
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename='crm_pipeline_stages' AND indexname='ix_crm_stages_pipeline') THEN
-        CREATE INDEX ix_crm_stages_pipeline ON crm_pipeline_stages(pipeline_id);
+        CREATE INDEX IF NOT EXISTS ix_crm_stages_pipeline ON crm_pipeline_stages(pipeline_id);
     END IF;
 END $$;
 
@@ -72,10 +72,10 @@ CREATE TABLE IF NOT EXISTS crm_deals (
 
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename='crm_deals' AND indexname='ix_crm_deals_company') THEN
-        CREATE INDEX ix_crm_deals_company  ON crm_deals(company_domain);
-        CREATE INDEX ix_crm_deals_stage    ON crm_deals(stage_id);
-        CREATE INDEX ix_crm_deals_owner    ON crm_deals(owner_id);
-        CREATE INDEX ix_crm_deals_pipeline ON crm_deals(pipeline_id);
+        CREATE INDEX IF NOT EXISTS ix_crm_deals_company  ON crm_deals(company_domain);
+        CREATE INDEX IF NOT EXISTS ix_crm_deals_stage    ON crm_deals(stage_id);
+        CREATE INDEX IF NOT EXISTS ix_crm_deals_owner    ON crm_deals(owner_id);
+        CREATE INDEX IF NOT EXISTS ix_crm_deals_pipeline ON crm_deals(pipeline_id);
     END IF;
 END $$;
 
@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS crm_deal_stage_history (
 
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename='crm_deal_stage_history' AND indexname='ix_deal_history_deal') THEN
-        CREATE INDEX ix_deal_history_deal  ON crm_deal_stage_history(deal_id);
-        CREATE INDEX ix_deal_history_stage ON crm_deal_stage_history(to_stage_id);
+        CREATE INDEX IF NOT EXISTS ix_deal_history_deal  ON crm_deal_stage_history(deal_id);
+        CREATE INDEX IF NOT EXISTS ix_deal_history_stage ON crm_deal_stage_history(to_stage_id);
     END IF;
 END $$;

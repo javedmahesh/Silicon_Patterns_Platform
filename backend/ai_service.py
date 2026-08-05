@@ -8,7 +8,6 @@ no network I/O, fully reproducible given the same data.
 from __future__ import annotations
 
 import time
-from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -37,7 +36,7 @@ from backend.schemas import (
     AiRiskScoreOut,
     Page,
 )
-from master_db.models import Campaign, CrmDeal, CrmPipelineStage, CsAccount, Opportunity, User
+from master_db.models import Campaign, CrmDeal, Opportunity, User
 
 from backend.timeutil import utc as _utc, utcnow as _utcnow
 

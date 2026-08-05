@@ -1,7 +1,6 @@
 """Data access for Enterprise CRM Phase 8: AI Intelligence & Copilot (deterministic, no LLM)."""
 from __future__ import annotations
 
-from datetime import datetime
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session

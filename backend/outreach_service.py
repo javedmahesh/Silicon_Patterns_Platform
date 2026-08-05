@@ -12,7 +12,7 @@ sync from Discovery and assign owners; any authenticated user (incl. members /
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -1112,42 +1112,6 @@ def get_lead_timeline(session: Session, lead_id: int, limit: int = 50) -> list[U
     return events[:limit]
 
 
-def get_company_timeline(session: Session, domain: str, limit: int = 50) -> list[UnifiedTimelineEvent]:
-    from sqlalchemy import select
-    from master_db.models import OutreachLead, OutreachActivity, OutreachMeeting, OutreachTask
-    from sqlalchemy.orm import Session as SASession
-
-    co = repo.get_company(session, domain)
-    if co is None:
-        raise HTTPException(status_code=404, detail="company not found")
-    # Gather all leads for this company
-    from sqlalchemy import select as sa_select
-    lead = orepo.get_lead_by_domain(session, domain)
-    events: list[UnifiedTimelineEvent] = []
-    if lead:
-        acts = orepo.list_activities(session, lead.id, limit=limit)
-        meetings, _ = orepo.list_meetings(session, outreach_lead_id=lead.id, limit=limit)
-        tasks, _ = orepo.list_tasks(session, outreach_lead_id=lead.id, limit=limit)
-        events = (
-            [_activity_to_event(a) for a in acts]
-            + [_meeting_to_event(m) for m in meetings]
-            + [_task_to_event(t) for t in tasks]
-        )
-    # Also include meetings/tasks linked directly by domain (not via lead)
-    domain_meetings, _ = orepo.list_meetings(session, company_domain=domain, limit=limit)
-    domain_tasks, _ = orepo.list_tasks(session, company_domain=domain, limit=limit)
-    seen_meeting_ids = {e.event_id for e in events if e.event_type == "meeting"}
-    seen_task_ids = {e.event_id for e in events if e.event_type == "task"}
-    for m in domain_meetings:
-        if f"meeting-{m.id}" not in seen_meeting_ids:
-            events.append(_meeting_to_event(m))
-    for t in domain_tasks:
-        if f"task-{t.id}" not in seen_task_ids:
-            events.append(_task_to_event(t))
-    events.sort(key=lambda e: e.timestamp or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-    return events[:limit]
-
-
 # ================================================================= follow-up engine
 def _reminder_priority(days_until: int, stage: str) -> str:
     if days_until < 0:
@@ -1642,10 +1606,6 @@ def pin_message(session: Session, message_id: int, actor) -> OutreachMessageOut:
 
 def unpin_message(session: Session, message_id: int, actor) -> OutreachMessageOut:
     return _set_msg_state(session, message_id, actor, is_pinned=False)
-
-
-def mark_important(session: Session, message_id: int, actor) -> OutreachMessageOut:
-    return _set_msg_state(session, message_id, actor, is_important=True)
 
 
 def archive_message(session: Session, message_id: int, actor) -> OutreachMessageOut:

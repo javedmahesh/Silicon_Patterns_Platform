@@ -78,7 +78,6 @@ from backend.schemas import (
     AssignmentCreate,
     AssignmentPatch,
     AssignmentOut,
-    AssignmentEventOut,
     WorkloadEntry,
     WorkloadOut,
     CompanyNoteIn,

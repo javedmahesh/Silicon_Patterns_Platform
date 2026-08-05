@@ -6,7 +6,7 @@ No platform data is duplicated here.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import and_, func, or_, select

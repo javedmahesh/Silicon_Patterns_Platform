@@ -15,7 +15,6 @@ from config.enums import LEADERSHIP_OPPORTUNITY_TYPES, PROJECT_OPPORTUNITY_TYPES
 from master_db.models import (
     Company,
     CompanyNote,
-    CompanyRollup,
     DecisionMaker,
     DecisionMakerContact,
     DecisionMakerNote,
@@ -28,7 +27,6 @@ from master_db.models import (
     LeadReviewEvent,
     LeadScore,
     LeadershipSignal,
-    NewsSource,
     Opportunity,
     OpportunityArticle,
     OpportunityReview,
@@ -121,10 +119,6 @@ def jobs_for(session: Session, domain: str, limit: int = 200) -> list[Job]:
 
 def demand_for(session: Session, domain: str) -> DemandSignal | None:
     return session.get(DemandSignal, domain)
-
-
-def rollup_for(session: Session, domain: str) -> CompanyRollup | None:
-    return session.get(CompanyRollup, domain)
 
 
 def decision_makers_for(session: Session, domain: str) -> list[DecisionMaker]:
@@ -327,10 +321,6 @@ def company_opportunity_timeline(session: Session, company_domain: str,
         .order_by(Opportunity.published_date.desc(), Opportunity.ingested_at.desc())
         .limit(limit)
     ))
-
-
-def list_news_sources(session: Session) -> list[NewsSource]:
-    return list(session.scalars(select(NewsSource).order_by(NewsSource.name)))
 
 
 def add_opportunity_review(session: Session, opportunity_id: str, *, action: str,
@@ -711,7 +701,7 @@ def list_review_actions(session: Session, review_id: int) -> list[ReviewAction]:
 # orchestrator.PIPELINE_ORDER). decision_maker_intelligence is intentionally excluded:
 # it is manual-only (paid Apify actor) and therefore never a "scheduled job" whose
 # staleness should be flagged here. Its manual runs remain visible in pipeline_runs.
-PIPELINE_COMPONENTS = ("industry", "blog", "news", "annual_list", "company_news", "career", "scoring", "leadership", "engagement")
+PIPELINE_COMPONENTS = ("industry", "blog", "news", "annual_list", "company_news", "career", "market_discovery", "market_intelligence", "scoring", "leadership", "engagement")
 
 
 def recent_pipeline_runs(session: Session, limit: int = 20) -> list[PipelineRun]:
@@ -720,28 +710,44 @@ def recent_pipeline_runs(session: Session, limit: int = 20) -> list[PipelineRun]
     ))
 
 
+def _latest_run_per_component(session: Session, *, status: str | None = None) -> dict[str, PipelineRun]:
+    """The newest pipeline_runs row for each component, in 2 queries (not one per
+    component): group to the max run_id, then fetch just those rows."""
+    q = select(PipelineRun.component, func.max(PipelineRun.run_id))
+    if status is not None:
+        q = q.where(PipelineRun.status == status)
+    latest_ids = [rid for _, rid in session.execute(q.group_by(PipelineRun.component)) if rid is not None]
+    if not latest_ids:
+        return {}
+    rows = session.scalars(select(PipelineRun).where(PipelineRun.run_id.in_(latest_ids)))
+    return {r.component: r for r in rows}
+
+
 def pipeline_health(session: Session) -> list[dict]:
-    """Per-component freshness from pipeline_runs (last status / success / duration)."""
+    """Per-component freshness from pipeline_runs (last status / success / duration).
+
+    Five queries total regardless of how many components exist — this feeds the
+    dashboard health strip, which used to cost 3 queries per component.
+    """
+    last_by_component = _latest_run_per_component(session)
+    ok_by_component = _latest_run_per_component(session, status="success")
+    failed_by_component = dict(session.execute(
+        select(PipelineRun.component, func.count())
+        .where(PipelineRun.status == "failed")
+        .group_by(PipelineRun.component)
+    ).all())
+
     out: list[dict] = []
     for c in PIPELINE_COMPONENTS:
-        last = session.scalar(
-            select(PipelineRun).where(PipelineRun.component == c).order_by(PipelineRun.run_id.desc())
-        )
-        last_ok = session.scalar(
-            select(PipelineRun).where(PipelineRun.component == c, PipelineRun.status == "success")
-            .order_by(PipelineRun.run_id.desc())
-        )
-        failed = session.scalar(
-            select(func.count()).select_from(PipelineRun)
-            .where(PipelineRun.component == c, PipelineRun.status == "failed")
-        ) or 0
+        last = last_by_component.get(c)
+        last_ok = ok_by_component.get(c)
         out.append({
             "component": c,
             "last_status": last.status if last else "never",
             "last_run": last.started_at if last else None,
             "last_success": (last_ok.finished_at or last_ok.started_at) if last_ok else None,
             "last_duration_ms": last.duration_ms if last else 0,
-            "failed_runs": int(failed),
+            "failed_runs": int(failed_by_component.get(c, 0)),
         })
     return out
 
@@ -802,12 +808,6 @@ def get_user_by_email(session: Session, email: str) -> User | None:
     if not email:
         return None
     return session.scalar(select(User).where(User.email == email.lower().strip()))
-
-
-def get_user_by_google_sub(session: Session, google_sub: str) -> User | None:
-    if not google_sub:
-        return None
-    return session.scalar(select(User).where(User.google_sub == google_sub))
 
 
 def get_user_by_microsoft_oid(session: Session, microsoft_oid: str) -> User | None:
@@ -885,17 +885,6 @@ def list_active_users(session: Session) -> list[User]:
         .where(User.status == "active", User.is_active.is_(True))
         .order_by(User.email)
     ))
-
-
-def count_active_admins(session: Session, *, exclude_id: int | None = None) -> int:
-    """Admin-tier (admin OR super_admin) active users — "is there still someone who
-    can administer the platform," not the literal string 'admin'."""
-    stmt = select(func.count()).select_from(User).where(
-        User.role.in_(("admin", "super_admin")), User.status == "active"
-    )
-    if exclude_id is not None:
-        stmt = stmt.where(User.id != exclude_id)
-    return session.scalar(stmt) or 0
 
 
 def count_active_super_admins(session: Session, *, exclude_id: int | None = None) -> int:
@@ -1034,17 +1023,6 @@ def list_user_audit(session: Session, *, limit: int = 100,
     if target_user_id is not None:
         stmt = stmt.where(UserAuditEvent.target_user_id == target_user_id)
     return list(session.scalars(stmt.order_by(UserAuditEvent.created_at.desc()).limit(limit)))
-
-
-def bootstrap_super_admin_used(session: Session) -> bool:
-    """Has the one-time initial administrator bootstrap ever fired? Not used to gate
-    it anymore — services.login_with_microsoft's bootstrap path is naturally
-    idempotent (it only fires when no User row exists yet for that email at all) —
-    kept as a simple historical/reporting signal."""
-    return session.scalar(
-        select(func.count()).select_from(UserAuditEvent)
-        .where(UserAuditEvent.action == "super_admin_bootstrap")
-    ) > 0
 
 
 def touch_last_seen(session: Session, user: User, *, throttle_seconds: int = 300) -> None:

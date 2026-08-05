@@ -11,9 +11,6 @@ from master_db.models import (
     CrmDealStageHistory,
     CrmPipeline,
     CrmPipelineStage,
-    OutreachActivity,
-    OutreachMeeting,
-    OutreachMessage,
 )
 
 from backend.timeutil import utcnow as _utcnow
@@ -35,14 +32,6 @@ def list_pipelines(
     return rows, total
 
 
-def create_pipeline(session: Session, **kw) -> CrmPipeline:
-    p = CrmPipeline(**kw)
-    session.add(p)
-    session.flush()
-    return p
-
-
-# ----------------------------------------------------------------- stages
 def get_stage(session: Session, stage_id: int) -> CrmPipelineStage | None:
     return session.get(CrmPipelineStage, stage_id)
 
@@ -55,37 +44,6 @@ def list_stages(session: Session, pipeline_id: int) -> list[CrmPipelineStage]:
     ))
 
 
-def list_stages_batch(session: Session, pipeline_ids: list[int]) -> dict[int, list[CrmPipelineStage]]:
-    """Stages for every given pipeline, 1 query — avoids N+1 across list_pipelines()."""
-    if not pipeline_ids:
-        return {}
-    rows = session.scalars(
-        select(CrmPipelineStage)
-        .where(CrmPipelineStage.pipeline_id.in_(pipeline_ids))
-        .order_by(CrmPipelineStage.pipeline_id, CrmPipelineStage.stage_order)
-    )
-    by_pipeline: dict[int, list[CrmPipelineStage]] = {}
-    for s in rows:
-        by_pipeline.setdefault(s.pipeline_id, []).append(s)
-    return by_pipeline
-
-
-def add_stage(session: Session, **kw) -> CrmPipelineStage:
-    s = CrmPipelineStage(**kw)
-    session.add(s)
-    session.flush()
-    return s
-
-
-def delete_stage(session: Session, stage_id: int) -> bool:
-    s = session.get(CrmPipelineStage, stage_id)
-    if not s:
-        return False
-    session.delete(s)
-    return True
-
-
-# ----------------------------------------------------------------- deals
 def get_deal(session: Session, deal_id: int) -> CrmDeal | None:
     return session.get(CrmDeal, deal_id)
 
@@ -131,54 +89,11 @@ def list_deals(
     return rows, total
 
 
-def list_deals_for_stages(
-    session: Session, stage_ids: list[int], *,
-    owner_id: int | None = None,
-    search: str | None = None,
-) -> list[CrmDeal]:
-    """Batch-load all deals across a set of stage_ids (Kanban). No N+1."""
-    if not stage_ids:
-        return []
-    q = select(CrmDeal).where(CrmDeal.stage_id.in_(stage_ids))
-    if owner_id is not None:
-        q = q.where(CrmDeal.owner_id == owner_id)
-    if search:
-        pat = f"%{search}%"
-        q = q.where(or_(CrmDeal.title.ilike(pat), CrmDeal.notes.ilike(pat)))
-    return list(session.scalars(q.order_by(CrmDeal.value.desc().nullslast())))
-
-
 def create_deal(session: Session, **kw) -> CrmDeal:
     d = CrmDeal(**kw)
     session.add(d)
     session.flush()
     return d
-
-
-# ----------------------------------------------------------------- stage history
-def get_open_history(session: Session, deal_id: int) -> CrmDealStageHistory | None:
-    """The current (not yet exited) stage history entry for a deal."""
-    return session.scalar(
-        select(CrmDealStageHistory).where(
-            CrmDealStageHistory.deal_id == deal_id,
-            CrmDealStageHistory.exited_at.is_(None),
-        )
-    )
-
-
-def list_stage_history(session: Session, deal_id: int) -> list[CrmDealStageHistory]:
-    return list(session.scalars(
-        select(CrmDealStageHistory)
-        .where(CrmDealStageHistory.deal_id == deal_id)
-        .order_by(CrmDealStageHistory.entered_at)
-    ))
-
-
-def add_stage_history(session: Session, **kw) -> CrmDealStageHistory:
-    h = CrmDealStageHistory(**kw)
-    session.add(h)
-    session.flush()
-    return h
 
 
 # ----------------------------------------------------------------- batch stats
@@ -279,83 +194,3 @@ def stalled_deals(
     ))
 
 
-def closing_soon_deals(session: Session, pipeline_id: int, days: int = 30) -> list[CrmDeal]:
-    """Open-stage deals closing within *days* days."""
-    from datetime import timedelta
-    cutoff = _utcnow() + timedelta(days=days)
-    open_stage_ids = session.scalars(
-        select(CrmPipelineStage.id).where(
-            CrmPipelineStage.pipeline_id == pipeline_id,
-            CrmPipelineStage.stage_type == "open",
-        )
-    ).all()
-    if not open_stage_ids:
-        return []
-    return list(session.scalars(
-        select(CrmDeal)
-        .where(CrmDeal.stage_id.in_(open_stage_ids))
-        .where(CrmDeal.expected_close_date.isnot(None))
-        .where(CrmDeal.expected_close_date <= cutoff)
-        .order_by(CrmDeal.expected_close_date)
-        .limit(20)
-    ))
-
-
-def recent_won_lost(
-    session: Session, pipeline_id: int, stage_type: str, limit: int = 10
-) -> list[CrmDeal]:
-    stage_ids = session.scalars(
-        select(CrmPipelineStage.id).where(
-            CrmPipelineStage.pipeline_id == pipeline_id,
-            CrmPipelineStage.stage_type == stage_type,
-        )
-    ).all()
-    if not stage_ids:
-        return []
-    return list(session.scalars(
-        select(CrmDeal)
-        .where(CrmDeal.stage_id.in_(stage_ids))
-        .order_by(CrmDeal.updated_at.desc())
-        .limit(limit)
-    ))
-
-
-def deal_timeline_events(
-    session: Session, deal_id: int, *, limit: int = 50, offset: int = 0
-) -> tuple[list, list, list, list[CrmDealStageHistory]]:
-    """Batch-load all timeline sources for a deal in 4 queries."""
-    deal = session.get(CrmDeal, deal_id)
-    if not deal:
-        return [], [], [], []
-
-    # Find the outreach lead for this company to join messages/meetings/activities
-    from master_db.models import OutreachLead
-    lead = session.scalar(
-        select(OutreachLead).where(OutreachLead.company_domain == deal.company_domain)
-    )
-    lead_id = lead.id if lead else None
-
-    if lead_id:
-        msgs = list(session.scalars(
-            select(OutreachMessage)
-            .where(OutreachMessage.outreach_lead_id == lead_id)
-            .order_by(OutreachMessage.created_at.desc())
-            .limit(limit)
-        ))
-        meetings = list(session.scalars(
-            select(OutreachMeeting)
-            .where(OutreachMeeting.outreach_lead_id == lead_id)
-            .order_by(OutreachMeeting.scheduled_at.desc())
-            .limit(limit)
-        ))
-        activities = list(session.scalars(
-            select(OutreachActivity)
-            .where(OutreachActivity.outreach_lead_id == lead_id)
-            .order_by(OutreachActivity.created_at.desc())
-            .limit(limit)
-        ))
-    else:
-        msgs, meetings, activities = [], [], []
-
-    history = list_stage_history(session, deal_id)
-    return msgs, meetings, activities, history

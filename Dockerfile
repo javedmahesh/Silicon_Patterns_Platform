@@ -2,7 +2,11 @@
 # Runs the EXACT app you run locally (uvicorn backend.main:app) — no serverless adapter.
 # Deploy to any container host: Railway, Render, Fly.io, Cloud Run.
 #
-# Migrations are NOT run at boot (safe with multiple replicas). Run once per deploy:
+# Pending migrations are applied automatically at startup, before the app serves its
+# first request (backend/main.py -> master_db.migrate). A Postgres advisory lock
+# serializes concurrent replicas, so this is safe with numReplicas > 1; a migration
+# failure aborts startup rather than serving on an outdated schema. No manual step is
+# needed after a deploy. Set SP_AUTO_MIGRATE=false to manage them out-of-band with
 #   DATABASE_URL=... python scripts/apply_migrations.py
 FROM python:3.13-slim
 

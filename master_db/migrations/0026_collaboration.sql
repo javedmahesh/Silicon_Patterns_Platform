@@ -21,8 +21,8 @@ CREATE TABLE IF NOT EXISTS crm_assignments (
 
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename='crm_assignments' AND indexname='ix_crm_assignments_user') THEN
-        CREATE INDEX ix_crm_assignments_user   ON crm_assignments(user_id);
-        CREATE INDEX ix_crm_assignments_entity ON crm_assignments(entity_type, entity_id);
+        CREATE INDEX IF NOT EXISTS ix_crm_assignments_user   ON crm_assignments(user_id);
+        CREATE INDEX IF NOT EXISTS ix_crm_assignments_entity ON crm_assignments(entity_type, entity_id);
     END IF;
 END $$;
 
@@ -44,8 +44,8 @@ CREATE TABLE IF NOT EXISTS crm_assignment_history (
 
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename='crm_assignment_history' AND indexname='ix_assign_history_entity') THEN
-        CREATE INDEX ix_assign_history_entity ON crm_assignment_history(entity_type, entity_id);
-        CREATE INDEX ix_assign_history_user   ON crm_assignment_history(user_id);
+        CREATE INDEX IF NOT EXISTS ix_assign_history_entity ON crm_assignment_history(entity_type, entity_id);
+        CREATE INDEX IF NOT EXISTS ix_assign_history_user   ON crm_assignment_history(user_id);
     END IF;
 END $$;
 
@@ -68,9 +68,9 @@ CREATE TABLE IF NOT EXISTS crm_comments (
 
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename='crm_comments' AND indexname='ix_crm_comments_entity') THEN
-        CREATE INDEX ix_crm_comments_entity ON crm_comments(entity_type, entity_id);
-        CREATE INDEX ix_crm_comments_author ON crm_comments(author_id);
-        CREATE INDEX ix_crm_comments_parent ON crm_comments(parent_id);
+        CREATE INDEX IF NOT EXISTS ix_crm_comments_entity ON crm_comments(entity_type, entity_id);
+        CREATE INDEX IF NOT EXISTS ix_crm_comments_author ON crm_comments(author_id);
+        CREATE INDEX IF NOT EXISTS ix_crm_comments_parent ON crm_comments(parent_id);
     END IF;
 END $$;
 
@@ -95,8 +95,8 @@ CREATE TABLE IF NOT EXISTS crm_notifications (
 
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename='crm_notifications' AND indexname='ix_crm_notifs_user_unread') THEN
-        CREATE INDEX ix_crm_notifs_user_unread ON crm_notifications(user_id, is_read);
-        CREATE INDEX ix_crm_notifs_entity      ON crm_notifications(entity_type, entity_id);
+        CREATE INDEX IF NOT EXISTS ix_crm_notifs_user_unread ON crm_notifications(user_id, is_read);
+        CREATE INDEX IF NOT EXISTS ix_crm_notifs_entity      ON crm_notifications(entity_type, entity_id);
     END IF;
 END $$;
 
@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS crm_saved_views (
 
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename='crm_saved_views' AND indexname='ix_crm_views_owner') THEN
-        CREATE INDEX ix_crm_views_owner  ON crm_saved_views(owner_id);
-        CREATE INDEX ix_crm_views_shared ON crm_saved_views(is_shared);
+        CREATE INDEX IF NOT EXISTS ix_crm_views_owner  ON crm_saved_views(owner_id);
+        CREATE INDEX IF NOT EXISTS ix_crm_views_shared ON crm_saved_views(is_shared);
     END IF;
 END $$;

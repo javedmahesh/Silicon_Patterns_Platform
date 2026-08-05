@@ -1,12 +1,16 @@
 # Master Database — Schema Reference
 
-**30 tables** in two layers (join key everywhere **`company_domain`**, normalized
-registrable domain): the **data layer** — engine outputs + resolution + scoring +
-the platform-intelligence tables (leadership signals, engagement recommendations,
-human reviews) + orchestrator audit — and the **multi-user layer** (accounts,
-lead-assignment CRM, professional contacts — added by migrations `0007`–`0010`).
-Owners in brackets. See `master_db/migrations/*.sql` for the exact DDL, `docs/ERD.md`
-for relationships.
+**131 tables** (join key everywhere **`company_domain`**, normalized registrable
+domain). The two layers documented below are the **data layer** — engine outputs +
+resolution + scoring + the platform-intelligence tables (leadership signals,
+engagement recommendations, human reviews) + orchestrator audit — and the
+**multi-user layer** (accounts, lead-assignment CRM, professional contacts — added
+by migrations `0007`–`0010`). The remainder are the later Enterprise CRM, outreach,
+historical-import, ML, notification, market-discovery and market-intelligence layers
+(migrations `0011`–`0058`), which are not detailed
+here; see `master_db/migrations/*.sql` for the exact DDL and `master_db/models.py`
+for the authoritative definitions. Owners in brackets. `docs/ERD.md` covers
+relationships.
 
 ## companies  *[Industry Discovery]*
 The hub. PK `company_domain`. Holds identity, geography, classification,

@@ -8,7 +8,7 @@ LLM calls, consistent with Phase 8's AI infrastructure.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -37,7 +37,7 @@ from backend.schemas import (
     SearchResponseOut,
     SearchResultOut,
 )
-from config.enums import FULL_TEXT_ENTITY_TYPES, GLOBAL_SEARCH_ENTITY_TYPES, KB_ARTICLE_STATUSES
+from config.enums import FULL_TEXT_ENTITY_TYPES, GLOBAL_SEARCH_ENTITY_TYPES
 
 from backend.timeutil import utc as _utc, utcnow as _utcnow
 

@@ -125,14 +125,14 @@ This populates the DB with companies, opportunities (incl. annual lists & compan
 
 #### Production PostgreSQL (Supabase / Neon)
 
-Create a dedicated Postgres project, then apply all 22 migrations:
+Create a dedicated Postgres project, then apply all 55 migrations:
 
 ```powershell
 # Set the database URL
 $env:DATABASE_URL = "postgresql+psycopg://user:pass@host:5432/silicon_patterns"
 
-# Apply migrations in order (0001–0022)
-for ($i = 1; $i -le 22; $i++) {
+# Apply migrations in order (0001–0055)
+for ($i = 1; $i -le 55; $i++) {
     $num = "{0:D4}" -f $i
     $file = "master_db/migrations/${num}_*.sql"
     psql $env:DATABASE_URL -f $file
@@ -142,9 +142,66 @@ for ($i = 1; $i -le 22; $i++) {
 # Do NOT run scripts/validate_postgres.py against production — it truncates tables
 ```
 
-**Verification:** `psql $env:DATABASE_URL -c "\dt"` lists 30 tables (data layer + multi-user layer).
+**Verification:** `psql $env:DATABASE_URL -c "\dt"` lists 128 tables (data layer + multi-user layer + CRM/outreach/ML layers).
 
 ---
+
+---
+
+## 3a. Scheduled-run email notifications (optional)
+
+After every **scheduled** run the platform emails an HTML report to every **approved,
+active** user. Pending-approval, disabled, rejected and deleted accounts are never
+notified. A delivery failure is recorded in `notification_deliveries` and never fails
+the pipeline.
+
+The scheduler does not talk to a mail server — it hands the finished run to the
+notification service, which renders the report and passes it to the configured
+provider (`backend/notifications/`). Swapping Gmail for Teams/Slack later is a new
+provider plus one environment variable; no scheduler change.
+
+**Gmail setup** (any RFC-compliant SMTP server works by changing host/port):
+
+1. Enable 2-Step Verification on the sending Google account.
+2. Google Account -> Security -> **App passwords** -> generate one for "Mail".
+   Gmail rejects the account password for SMTP; you must use the 16-character app
+   password.
+3. Set these on the host (Railway -> Variables). Never commit them:
+
+```powershell
+$env:EMAIL_PROVIDER      = "gmail"
+$env:EMAIL_FROM          = "javedmahesh1@gmail.com"
+$env:EMAIL_DISPLAY_NAME  = "Silicon Patterns"
+$env:SMTP_HOST           = "smtp.gmail.com"
+$env:SMTP_PORT           = "587"
+$env:SMTP_USERNAME       = "javedmahesh1@gmail.com"
+$env:SMTP_PASSWORD       = "<16-char app password>"
+$env:FRONTEND_URL        = "https://your-app.vercel.app"
+```
+
+Until `SMTP_PASSWORD` is set the provider reports "not configured" and every run is
+recorded as `logged` — built and counted, but not delivered. That is the safe default,
+not an error.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ENABLE_NOTIFICATIONS` | `true` | Master switch for every channel |
+| `NOTIFICATION_PROVIDER` / `EMAIL_PROVIDER` | `gmail` | Registered provider (`email`, `gmail`) |
+| `NOTIFICATION_RETRY_COUNT` | `3` | Total send attempts (1 = no retry) |
+| `FRONTEND_URL` | *(empty)* | "Open Silicon Patterns" button; hidden when blank |
+| `BRAND_NAME` | `Silicon Patterns` | Subject line, header, footer |
+| `BRAND_LOGO_URL` | *(empty)* | Absolute URL; blank renders a built-in monogram |
+| `SMTP_USE_STARTTLS` / `SMTP_USE_SSL` | `true` / `false` | Port 587 vs implicit TLS on 465 |
+
+A failed run notifies in two versions from the same payload: **admins** get the
+exception and per-stage errors, **everyone else** gets a concise notice — diagnostics
+can carry connection strings, so they never go to the whole user base.
+
+Check who was notified for a run:
+
+```
+GET /scheduler/runs/{run_id}/notifications      (manager+)
+```
 
 ## 4. Run the data pipeline
 
@@ -189,6 +246,8 @@ python -m orchestrator.cli run annual_list      # no-op if feed not present
 python -m orchestrator.cli run company_news     # no-op if feed not present
 python -m orchestrator.cli run career
 python -m orchestrator.cli run decision_maker_intelligence  # skipped without APIFY_API_TOKEN
+python -m orchestrator.cli run market_discovery   # no-op unless a source is enabled
+python -m orchestrator.cli run market_intelligence  # interprets discovered companies
 python -m orchestrator.cli run scoring
 python -m orchestrator.cli run leadership
 python -m orchestrator.cli run engagement
@@ -202,7 +261,8 @@ python -m orchestrator.cli run engagement
 > output. `run all` is unchanged: **ingest-only by default**, add `--run-engine` to
 > crawl every engine first (the scheduler/CI contract). Stages with no engine
 > (`scoring`, `leadership`, `engagement`, `decision_maker_intelligence`,
-> `annual_list`, `company_news`) are unaffected — they always just run.
+> `annual_list`, `company_news`, `market_discovery`, `market_intelligence`) are
+> unaffected — they always just run.
 
 ### Recovery & resume
 
@@ -661,7 +721,7 @@ No running server is needed.
 
 **Full architecture** (Vercel + dedicated Postgres + twice-daily GitHub Actions refresh, with secrets, schedule, engine bundling) is in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Quick checklist:
 
-1. **Master database:** Create a dedicated Postgres (Supabase / Neon), apply migrations 0001–0022, set `DATABASE_URL`.
+1. **Master database:** Create a dedicated Postgres (Supabase / Neon), apply migrations 0001–0055, set `DATABASE_URL`.
 2. **Backend API:** Deploy on a container host (Render / Railway / Fly / Cloud Run) with `Dockerfile`. Set `ENVIRONMENT=production`, `SP_JWT_SECRET`, `MICROSOFT_TENANT_ID`, `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`, `SP_BOOTSTRAP_ADMIN_EMAIL`, `SP_ADMIN_EMAILS`, `CORS_ORIGINS`, `DATABASE_URL`.
 3. **Frontend:** Deploy on Vercel (or static host). Set `VITE_API_BASE_URL` (deployed API origin).
 4. **Pipeline:** GitHub Actions workflow runs `sp-platform run all` twice daily via cron. Set `DATABASE_URL`, `APIFY_API_TOKEN` (if using Apify) in repo secrets.

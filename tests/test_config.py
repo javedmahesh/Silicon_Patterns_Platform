@@ -3,8 +3,9 @@
 Regression guard for the config bug where the security-relevant fields read only
 the bare names (``API_KEY`` / ``RATE_LIMIT_PER_MINUTE``) while every doc and deploy
 artifact (``render.yaml``, ``docs/*``) tells operators to set the ``SP_``-prefixed
-names. An operator following the docs left ``api_key=""`` — which ``backend/auth.py``
-treats as "auth DISABLED" — and silently disabled the rate limit. Both the
+names. An operator following the docs left ``api_key=""`` — which the service-key
+branch in ``backend/security.py`` treats as "no service key" — and silently disabled
+the rate limit. Both the
 ``SP_``-prefixed and bare names must bind. ``_env_file=None`` isolates the tests
 from any real ``.env``.
 """

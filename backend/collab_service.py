@@ -1,7 +1,6 @@
 """Enterprise CRM Phase 3: Team Collaboration business logic."""
 from __future__ import annotations
 
-from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import select

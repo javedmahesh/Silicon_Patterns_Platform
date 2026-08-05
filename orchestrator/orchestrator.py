@@ -63,6 +63,10 @@ class Orchestrator:
         # (pipeline_id="") don't surface in the Run History UI, so we skip capture.
         recorder = provenance.begin_stage(self.session, pipeline_id, name) if pipeline_id else None
         notes = ""
+        # One start + one completion line per stage (9 stages x 2 runs/day). Cheap, and
+        # the only way to tell a hung stage from a slow one in the hosted logs, where
+        # the pipeline_runs row isn't written until the stage returns.
+        logger.info("stage %s started (mode=%s pipeline=%s)", name, mode, pipeline_id or "-")
         try:
             if use_engine:
                 ok, engine_note = self._run_engine(stage)
@@ -86,10 +90,19 @@ class Orchestrator:
                 updated=updated, review=metrics.rows_review, errors=metrics.errors, notes=notes,
             )
             provenance.flush(self.session, recorder)   # only reached on the success path
+            # WARNING for partial (a feed died, rows were rejected) so degraded runs are
+            # greppable without opening the DB; INFO for a clean stage.
+            logger.log(
+                logging.WARNING if status in ("partial", "failed") else logging.INFO,
+                "stage %s %s in %dms (processed=%d created=%d updated=%d review=%d errors=%d)%s",
+                name, status, run.duration_ms, metrics.rows_in, created, updated,
+                metrics.rows_review, len(metrics.errors), f" — {notes}" if notes else "",
+            )
             return StageResult(name, status, metrics.rows_in, created, updated,
                                metrics.rows_review, run.duration_ms, metrics.errors, notes)
 
         except SkipStage as exc:
+            logger.info("stage %s skipped: %s", name, exc)
             self.tracker.finish(run, status="skipped", notes=str(exc))
             return StageResult(name, "skipped", duration_ms=run.duration_ms, notes=str(exc))
         except Exception as exc:  # isolate stage failure

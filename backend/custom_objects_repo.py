@@ -138,12 +138,6 @@ def delete_record(session: Session, record_id: int) -> bool:
     return True
 
 
-def count_records(session: Session, object_id: int) -> int:
-    return session.scalar(
-        select(func.count()).select_from(CustomRecord).where(CustomRecord.object_id == object_id)
-    ) or 0
-
-
 def total_records(session: Session) -> int:
     return session.scalar(select(func.count()).select_from(CustomRecord)) or 0
 

@@ -98,8 +98,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Refusing to start: ENVIRONMENT=production requires MICROSOFT_TENANT_ID and "
                 "MICROSOFT_CLIENT_ID to be configured. There is no other sign-in path in production."
             )
+        # Schema first: bring the database to the latest migration BEFORE anything
+        # touches it or a request can be served. A deploy must never serve traffic on a
+        # schema the code does not match, so a migration failure aborts startup rather
+        # than degrading — uvicorn exits non-zero and the host's restart policy takes
+        # over. Postgres only; SQLite dev builds its schema from the ORM.
+        if settings.auto_migrate:
+            from master_db.migrate import apply_pending
+
+            try:
+                result = apply_pending(settings.database_url, log=logger)
+            except Exception as exc:
+                logger.critical("Refusing to start: database migration failed — %s", exc,
+                                exc_info=True)
+                raise RuntimeError(
+                    f"Startup aborted: database migration failed ({exc}). The API will not "
+                    f"serve requests on an outdated schema. Fix the migration or set "
+                    f"SP_AUTO_MIGRATE=false to manage migrations out-of-band."
+                ) from exc
+            if result.status == "skipped":
+                logger.info("Migrations skipped: %s", result.detail)
+        else:
+            logger.warning("SP_AUTO_MIGRATE=false — startup will NOT apply pending migrations")
+
         app.state.db = Database(settings)
-        logger.info("API startup: %s v%s", settings.app_name, settings.app_version)
+        # Register the crawl providers once. Shared infrastructure — Market Discovery,
+        # News Collection, Career Intelligence and future crawlers all resolve through
+        # the same registry, so which vendor is used is a settings decision, not a
+        # caller decision. No network happens here; providers are constructed lazily.
+        from backend.crawling import register_default_providers
+
+        logger.info("Crawl providers registered: %s",
+                    ", ".join(register_default_providers(settings)))
+        logger.info("Starting API: %s v%s", settings.app_name, settings.app_version)
         # Production safety: the dev auth-bypass must never be active in prod
         # (unconditionally forced off there — see security._bypass_on); flag loudly if
         # it is on outside prod so a misconfigured deploy is obvious in the logs.
