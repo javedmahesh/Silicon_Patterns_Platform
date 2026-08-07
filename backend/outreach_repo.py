@@ -196,14 +196,6 @@ def message_status_counts(session: Session) -> dict[str, int]:
     return {status: n for status, n in rows}
 
 
-def reply_count_for_lead(session: Session, lead_id: int) -> int:
-    return session.scalar(
-        select(func.count()).select_from(OutreachMessage)
-        .where(OutreachMessage.outreach_lead_id == lead_id,
-               OutreachMessage.direction == "inbound")
-    ) or 0
-
-
 # ----------------------------------------------------------------- tasks
 def get_task(session: Session, task_id: int) -> OutreachTask | None:
     return session.get(OutreachTask, task_id)

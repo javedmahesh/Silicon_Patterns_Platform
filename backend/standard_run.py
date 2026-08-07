@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -53,6 +53,14 @@ STANDARD_RUN_COMPONENTS: list[str] | None = None
 # process singleton on Postgres; the in-process lock covers SQLite/tests.
 _ADVISORY_LOCK_KEY = 748291013
 _local_lock = threading.Lock()
+
+# A run killed mid-flight (container restart, redeploy, SIGKILL) never reaches the
+# finish block, so its row keeps status='running' forever. Nothing else clears it, and
+# a permanent 'running' row makes the run-now pre-check answer "busy" for good. Any
+# run still 'running' after this long is therefore treated as dead, not in progress —
+# the advisory lock, not this row, is the real concurrency guard. Generous vs the
+# observed worst case (~13 min) so a genuinely slow run is never reaped mid-run.
+STALE_RUN_AFTER = timedelta(hours=6)
 
 
 class RunInProgress(Exception):
@@ -133,6 +141,36 @@ class _RunLock:
         if self._local_held:
             _local_lock.release()
             self._local_held = False
+
+
+def stale_running_cutoff(now: datetime | None = None) -> datetime:
+    """Runs that started before this instant and are still 'running' are dead."""
+    return (now or datetime.now(timezone.utc)) - STALE_RUN_AFTER
+
+
+def reap_stale_runs(session: Session, *, now: datetime | None = None) -> int:
+    """Close out runs abandoned by a crash/redeploy so they stop reading as in-flight.
+
+    Called once when the scheduler starts (i.e. on every boot). Only touches rows that
+    are provably dead by :data:`STALE_RUN_AFTER`; a live run is never affected, so this
+    is safe to run on a replica while another replica is mid-run.
+    """
+    cutoff = stale_running_cutoff(now)
+    rows = list(session.scalars(
+        select(PipelineExecution).where(PipelineExecution.status == "running")
+    ))
+    # started_at comes back naive from SQLite and aware from Postgres; compare in UTC.
+    stale = [r for r in rows if (r.started_at.replace(tzinfo=timezone.utc)
+                                 if r.started_at.tzinfo is None else r.started_at) < cutoff]
+    for r in stale:
+        r.status = "failed"
+        r.finished_at = now or datetime.now(timezone.utc)
+        r.notification_status = "skipped"
+        r.notification_detail = "run did not finish (process stopped); marked failed on restart"
+        logger.warning("reaped stale Standard Run %s (started %s)", r.run_id, r.started_at)
+    if stale:
+        session.commit()
+    return len(stale)
 
 
 def _platform_totals(session: Session) -> dict[str, int]:
@@ -216,7 +254,22 @@ def execute_standard_run(
 
         orch = Orchestrator(session, run_engine=run_engine, trigger=(stage_trigger or trigger),
                             company_limit=company_limit)
-        results = orch.run_pipeline(components=comps, pipeline_id=run_id)
+        try:
+            results = orch.run_pipeline(components=comps, pipeline_id=run_id)
+        except Exception as exc:
+            # run_pipeline isolates per-stage failures, so reaching here means the run
+            # itself broke (DB gone, orchestrator bug). Close the row out and emit the
+            # failure notification — otherwise a hard failure is the ONE case that
+            # notifies nobody, which is exactly when someone needs to know.
+            logger.exception("Standard Run %s raised", run_id)
+            session.rollback()
+            execution.finished_at = datetime.now(timezone.utc)
+            execution.status = "failed"
+            execution.failure_count = 1
+            session.commit()
+            if notify:
+                _notify(session, settings, execution, exception=f"{type(exc).__name__}: {exc}")
+            raise
 
         finished = datetime.now(timezone.utc)
         started = execution.started_at
@@ -247,12 +300,22 @@ def execute_standard_run(
         return execution, results
 
 
-def _notify(session: Session, settings: Settings, execution: PipelineExecution) -> None:
-    """Send the Outlook summary; a failure here is recorded but never propagates."""
+def _notify(session: Session, settings: Settings, execution: PipelineExecution,
+            *, exception: str = "") -> None:
+    """Emit the run to the notification service and record its rollup.
+
+    This is the whole of the scheduler's involvement in notification: it hands over
+    the finished execution row and stores the returned status. It does not know the
+    channel, the provider, the recipients, or the message format — swapping Gmail for
+    Teams changes ``SP_NOTIFICATION_PROVIDER``, not this function.
+
+    A failure here is recorded and never propagates.
+    """
     from backend import notifications
 
     try:
-        status, detail, count = notifications.send_run_notification(session, settings, execution)
+        status, detail, count = notifications.send_run_notification(
+            session, settings, execution, exception=exception)
     except Exception as exc:  # pragma: no cover - defensive; notifications also guards internally
         logger.warning("run notification raised (ignored): %s", exc, exc_info=True)
         status, detail, count = "failed", f"unexpected error: {exc}", 0

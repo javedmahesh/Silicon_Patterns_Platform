@@ -4367,6 +4367,22 @@ class ExecutionOut(_ORM):
     created_at: datetime | None = None
 
 
+class NotificationDeliveryOut(_ORM):
+    """One recipient's delivery record for a run (backend/notifications)."""
+
+    id: int
+    run_id: str
+    event_type: str = "run_summary"
+    channel: str = "email"
+    provider: str = ""
+    recipient: str = ""
+    audience: str = "all"
+    status: str = "pending"
+    attempts: int = 0
+    error: str = ""
+    created_at: datetime | None = None
+
+
 class SchedulerConfigIn(BaseModel):
     """Update the Standard Run schedule from the UI. Times are HH:MM (24-hour),
     server-local; validated + de-duped server-side."""

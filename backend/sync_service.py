@@ -20,24 +20,12 @@ from backend.import_engine import ImportReport, run_import
 from master_db.models import ImportJob, ImportReviewItem
 from sync import (
     DmSyncPreview,
-    HistoricalCompany,
-    HistoricalDecisionMaker,
     SyncPreview,
     load_historical_companies,
     load_historical_decision_makers,
     reconcile_companies,
     reconcile_decision_makers,
 )
-
-
-def preview_company_sync(session: Session, records: list[HistoricalCompany]) -> SyncPreview:
-    return reconcile_companies(session, records)
-
-
-def preview_decision_maker_sync(
-    session: Session, records: list[HistoricalDecisionMaker]
-) -> DmSyncPreview:
-    return reconcile_decision_makers(session, records)
 
 
 def preview_company_sync_from_file(

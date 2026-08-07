@@ -1,21 +1,19 @@
 """Data access for Enterprise CRM Phase 3: Team Collaboration."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from master_db.models import (
     CrmAssignment,
     CrmAssignmentHistory,
     CrmComment,
-    CrmDeal,
     CrmNotification,
     CrmSavedView,
     OutreachMeeting,
     OutreachTask,
-    User,
 )
 
 from backend.timeutil import utcnow as _utcnow
@@ -35,20 +33,6 @@ def list_entity_assignments(
             CrmAssignment.entity_id == entity_id,
         ).order_by(CrmAssignment.created_at)
     ))
-
-
-def list_user_assignments(
-    session: Session, user_id: int,
-    entity_type: str | None = None,
-    role: str | None = None,
-    limit: int = 200,
-) -> list[CrmAssignment]:
-    q = select(CrmAssignment).where(CrmAssignment.user_id == user_id)
-    if entity_type:
-        q = q.where(CrmAssignment.entity_type == entity_type)
-    if role:
-        q = q.where(CrmAssignment.role == role)
-    return list(session.scalars(q.order_by(CrmAssignment.created_at.desc()).limit(limit)))
 
 
 def get_existing_assignment(
@@ -90,25 +74,6 @@ def list_assignment_history(
         .order_by(CrmAssignmentHistory.created_at.desc())
         .limit(100)
     ))
-
-
-def assignments_batch(
-    session: Session, entity_type: str, entity_ids: list[str]
-) -> dict[str, list[CrmAssignment]]:
-    """Batch-load assignments for multiple entity_ids (no N+1)."""
-    if not entity_ids:
-        return {}
-    rows = list(session.scalars(
-        select(CrmAssignment)
-        .where(
-            CrmAssignment.entity_type == entity_type,
-            CrmAssignment.entity_id.in_(entity_ids),
-        )
-    ))
-    result: dict[str, list[CrmAssignment]] = {eid: [] for eid in entity_ids}
-    for r in rows:
-        result[r.entity_id].append(r)
-    return result
 
 
 # ----------------------------------------------------------------- work queue

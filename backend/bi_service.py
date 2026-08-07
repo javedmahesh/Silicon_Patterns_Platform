@@ -15,7 +15,6 @@ Scheduled report delivery reuses the existing mock/gmail email provider registry
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -439,10 +438,6 @@ def bi_dashboard(session: Session, user) -> BiDashboardOut:
     )
     _dash_cache[key] = (time.monotonic(), out)
     return out
-
-
-def invalidate_dashboard_cache() -> None:
-    _dash_cache.clear()
 
 
 def bi_analytics(session: Session, user) -> BiAnalyticsOut:

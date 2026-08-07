@@ -29,7 +29,7 @@ from sqlalchemy import select
 
 from backend.config import Settings
 from backend.scheduler_config import read_config
-from backend.standard_run import RunInProgress, execute_standard_run
+from backend.standard_run import RunInProgress, execute_standard_run, reap_stale_runs
 from master_db.models import PipelineExecution
 
 logger = logging.getLogger("backend.scheduler")
@@ -65,6 +65,15 @@ class PipelineScheduler:
             return
         if self._thread is not None and self._thread.is_alive():
             return
+        # A run interrupted by the restart that just brought us up is still marked
+        # 'running'; close it out before the first tick so it can't masquerade as live.
+        try:
+            with self._sessionmaker() as session:
+                reaped = reap_stale_runs(session)
+            if reaped:
+                logger.info("marked %d abandoned Standard Run(s) as failed on startup", reaped)
+        except Exception:   # never let bookkeeping stop the scheduler from starting
+            logger.exception("stale-run reap failed (continuing)")
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="standard-run-scheduler", daemon=True)
         self._thread.start()

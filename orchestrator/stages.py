@@ -29,11 +29,13 @@ from master_db.models import (
     Company,
     CompanyRollup,
     DecisionMaker,
+    DiscoveryCandidateRecord,
     DemandSignal,
     EngagementRecommendation,
     Job,
     LeadScore,
     LeadershipSignal,
+    MarketIntelligenceRecord,
     Opportunity,
 )
 
@@ -215,6 +217,60 @@ def decision_maker_intelligence_ingest(session: Session, *, limit: int | None = 
     return _from_result(import_decision_makers(session, limit=limit))
 
 
+def market_discovery_ingest(session: Session) -> IngestMetrics:
+    """Run the Market Discovery Engine over its registered, enabled sources.
+
+    The scheduler knows nothing about individual sources: it calls the engine, the
+    engine asks the registry which sources are enabled, and the registry is the only
+    thing that knows Firecrawl/Wellfound/Dealroom/etc. exist. Adding a connector
+    therefore never touches this function.
+
+    With zero registered sources — the state this framework ships in — the run is a
+    successful no-op, which is why the stage is safe to include in the automatic
+    pipeline before any connector exists.
+    """
+    from backend.config import get_settings
+    from backend.market_discovery import registry, run_discovery
+
+    registry.autodiscover()      # import any connector modules so they self-register
+    result = run_discovery(session, get_settings())
+    return IngestMetrics(
+        rows_in=result.fetched,
+        rows_upserted=result.new + result.updated,
+        rows_rejected=result.rejected,
+        rows_review=result.below_threshold,
+        errors=[f"{s.name}: {s.error}" for s in result.failed_sources],
+        status=result.status,
+        notes=result.summary(),
+    )
+
+
+def market_intelligence_ingest(session: Session) -> IngestMetrics:
+    """Interpret discovery candidates into market intelligence.
+
+    Runs immediately after the Market Discovery Engine, so a company found this run
+    is classified, signalled and prioritized in the same pass. Deterministic rules
+    only — in-process, no network, no credentials — so the stage is always safe to
+    include: with no candidates it is a successful no-op.
+
+    The scheduler knows nothing about rules or vocabularies; changing what the
+    platform looks for is a rule-pack change and never touches this function.
+    """
+    from backend.config import get_settings
+    from backend.market_intelligence import run_market_intelligence
+
+    result = run_market_intelligence(session, get_settings())
+    return IngestMetrics(
+        rows_in=result.evaluated + result.skipped,
+        rows_upserted=result.evaluated,
+        rows_rejected=result.rejected,
+        rows_review=len(result.actionable),
+        errors=list(result.errors),
+        status=result.status,
+        notes=result.summary(),
+    )
+
+
 def scoring_ingest(session: Session) -> IngestMetrics:
     from lead_scoring.service import score_all
 
@@ -301,6 +357,21 @@ STAGES: dict[str, Stage] = {
         "decision_maker_intelligence", 4, [DecisionMaker], decision_maker_intelligence_ingest, None,
         "Scrape decision makers (C-suite, directors, VPs) -> decision_makers (Apify) — MANUAL only",
     ),
+    # Market Discovery Engine: finds NEW market entrants. Runs before scoring so a
+    # company promoted this run is scored in the same pass. No engine spec — the
+    # engine is in-process and its sources are plugged in via the registry, not here.
+    "market_discovery": Stage(
+        "market_discovery", 4, [DiscoveryCandidateRecord], market_discovery_ingest, None,
+        "Discover new market entrants -> discovery_candidates",
+    ),
+    # Market Intelligence Layer: interprets what discovery found. Immediately after
+    # discovery so a company found this run is prioritized in the same pass, and
+    # before scoring so lead scoring sees current intelligence. Deterministic rules,
+    # in-process — no engine spec, no credentials, no network.
+    "market_intelligence": Stage(
+        "market_intelligence", 4, [MarketIntelligenceRecord], market_intelligence_ingest, None,
+        "Interpret discovered companies -> market_intelligence",
+    ),
     "scoring": Stage(
         "scoring", 5, [LeadScore], scoring_ingest, None,
         "Score leads -> lead_scores",
@@ -319,4 +390,4 @@ STAGES: dict[str, Stage] = {
 # ``decision_maker_intelligence`` is deliberately absent: it is manual-only (paid Apify
 # actor) and is triggered per-company from the Decision Makers page instead. It remains
 # in STAGES above so it can still be run on demand via ``run_stage`` / the manual job.
-PIPELINE_ORDER: list[str] = ["industry", "blog", "news", "annual_list", "company_news", "career", "scoring", "leadership", "engagement"]
+PIPELINE_ORDER: list[str] = ["industry", "blog", "news", "annual_list", "company_news", "career", "market_discovery", "market_intelligence", "scoring", "leadership", "engagement"]

@@ -12,5 +12,5 @@
 -- isn't a Postgres type), so nothing further is needed here.
 
 -- Provider-level message ID for deduplication during Gmail sync
-ALTER TABLE outreach_messages ADD COLUMN provider_message_id VARCHAR(200) DEFAULT '';
-CREATE INDEX ix_outreach_msgs_prov_id ON outreach_messages(provider_message_id);
+ALTER TABLE outreach_messages ADD COLUMN IF NOT EXISTS provider_message_id VARCHAR(200) DEFAULT '';
+CREATE INDEX IF NOT EXISTS ix_outreach_msgs_prov_id ON outreach_messages(provider_message_id);

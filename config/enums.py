@@ -389,6 +389,33 @@ EXECUTION_STATUSES: tuple[str, ...] = ("running", "success", "partial", "failed"
 # "failed" = a real Graph sendMail was attempted. Never blocks the pipeline.
 NOTIFICATION_STATUSES: tuple[str, ...] = ("pending", "sent", "failed", "skipped", "logged")
 
+# --- Notification framework (backend/notifications) -------------------------
+# Channels the framework can deliver on. Only "email" is implemented; the rest are
+# declared so a provider can be added without a migration. A provider registers
+# itself under a name (e.g. "gmail") and reports which channel it serves.
+NOTIFICATION_CHANNELS: tuple[str, ...] = ("email", "teams", "slack", "webhook", "in_app")
+# Per-recipient delivery outcome recorded in notification_deliveries. Mirrors
+# NOTIFICATION_STATUSES minus "pending" plus nothing new — kept as its own tuple so
+# the run-level rollup and the per-recipient log can diverge later without a rename.
+NOTIFICATION_DELIVERY_STATUSES: tuple[str, ...] = ("pending", "sent", "failed", "skipped", "logged")
+# Which rendering a recipient receives. Admins get diagnostics (exception text,
+# per-stage errors); everyone else gets the concise failure notice.
+NOTIFICATION_AUDIENCES: tuple[str, ...] = ("all", "admin")
+NOTIFICATION_EVENT_TYPES: tuple[str, ...] = ("run_summary", "run_failure")
+
+# --- Market Discovery Engine (backend/market_discovery) ---------------------
+# Where a discovered candidate stands after a pipeline pass. A candidate is NOT a
+# company: "new"/"updated" are promotable, "below_threshold" is kept for review,
+# "duplicate" merged into another candidate, "rejected" failed engine validation.
+DISCOVERY_CANDIDATE_STATUSES: tuple[str, ...] = (
+    "new", "updated", "duplicate", "rejected", "below_threshold", "promoted",
+)
+
+# --- Market Intelligence Layer (backend/market_intelligence) -----------------
+# How urgently Silicon Patterns should act on a discovered company. Deterministic
+# bands over the opportunity score — never a free-text label.
+MARKET_INTELLIGENCE_PRIORITIES: tuple[str, ...] = ("critical", "high", "medium", "low")
+
 # --- Decision Maker Intelligence — MANUAL per-company jobs -------------------
 # DM intelligence is never scheduled (the Apify actor has a per-lead cost); it is
 # run manually from the Decision Makers page for a chosen set of companies, each

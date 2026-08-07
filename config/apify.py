@@ -62,6 +62,3 @@ APIFY_DIRECTOR_SENIORITY: tuple[str, ...] = (
 )
 
 
-def get_actor_url(actor_id: str) -> str:
-    """Get the Apify actor run URL."""
-    return f"{APIFY_BASE_URL}/acts/{actor_id}/runs"

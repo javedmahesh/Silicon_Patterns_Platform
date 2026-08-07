@@ -65,7 +65,9 @@ def test_pipeline_endpoints(client):
     # decision_maker_intelligence is intentionally absent — it is manual-only (paid
     # Apify actor), so it is not one of the automatic pipeline components whose
     # freshness the health strip reports.
-    assert comps == ["industry", "blog", "news", "annual_list", "company_news", "career", "scoring", "leadership", "engagement"]
+    assert comps == ["industry", "blog", "news", "annual_list", "company_news", "career",
+                     "market_discovery", "market_intelligence", "scoring", "leadership",
+                     "engagement"]
     assert all(h["last_status"] == "never" for h in client.get("/pipeline/health").json())
 
 

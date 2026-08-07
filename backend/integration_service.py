@@ -30,7 +30,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -708,10 +707,6 @@ def integration_dashboard(session: Session, user) -> IntegrationDashboardOut:
     )
     _dash_cache[key] = (time.monotonic(), out)
     return out
-
-
-def invalidate_dashboard_cache() -> None:
-    _dash_cache.clear()
 
 
 def integration_analytics(session: Session, user) -> IntegrationAnalyticsOut:

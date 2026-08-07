@@ -7,7 +7,7 @@ session; the caller is responsible for committing.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session

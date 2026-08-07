@@ -31,7 +31,7 @@ from backend.schemas import (
     OppIntelOut,
     RelationshipGraphOut,
 )
-from master_db.models import Company, DecisionMaker, LeadScore, LeadershipSignal, Opportunity
+from master_db.models import Company, DecisionMaker, LeadershipSignal, Opportunity
 
 _MEETING_STAGES = ("meeting_scheduled", "proposal_sent", "won")
 _CLOSED_STAGES = ("proposal_sent", "won")

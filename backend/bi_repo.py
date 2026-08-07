@@ -1,7 +1,6 @@
 """Data access for Enterprise CRM Phase 12: Data Warehouse & Advanced Business Intelligence."""
 from __future__ import annotations
 
-from datetime import datetime
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
@@ -211,8 +210,3 @@ def list_runs(session: Session, *, schedule_id: int | None = None, limit: int = 
     return list(session.scalars(q.order_by(ScheduledReportRun.id.desc()).limit(limit)))
 
 
-def run_status_counts(session: Session) -> dict[str, int]:
-    rows = session.execute(
-        select(ScheduledReportRun.status, func.count(ScheduledReportRun.id)).group_by(ScheduledReportRun.status)
-    ).all()
-    return {r[0]: r[1] for r in rows}

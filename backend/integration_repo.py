@@ -1,7 +1,6 @@
 """Data access for Enterprise CRM Phase 10: Integration Platform & Developer Ecosystem."""
 from __future__ import annotations
 
-from datetime import datetime
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
@@ -269,13 +268,6 @@ def connector_run_counts(session: Session) -> dict[int, int]:
         select(ConnectorRun.connector_id, func.count(ConnectorRun.id)).group_by(ConnectorRun.connector_id)
     ).all()
     return {r[0]: r[1] for r in rows}
-
-
-def connector_health_counts(session: Session) -> dict[str, int]:
-    rows = session.execute(
-        select(Connector.last_run_status, func.count(Connector.id)).group_by(Connector.last_run_status)
-    ).all()
-    return {(r[0] or "never_run"): r[1] for r in rows}
 
 
 # ----------------------------------------------------------------- plugins

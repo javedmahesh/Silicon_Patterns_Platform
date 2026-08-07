@@ -8,10 +8,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from backend import run_records, scheduler_service as svc
+from backend import notifications, run_records, scheduler_service as svc
 from backend.dependencies import Pagination, get_session, pagination
 from backend.schemas import (
     ExecutionOut,
+    NotificationDeliveryOut,
     Page,
     RunEngineRecordsOut,
     RunNowResult,
@@ -98,3 +99,20 @@ def run_now(
     if result.status == "busy":
         raise HTTPException(status.HTTP_409_CONFLICT, result.detail)
     return result
+
+
+@router.get("/runs/{run_id}/notifications", response_model=list[NotificationDeliveryOut],
+            summary="Notification delivery log for one run (manager+)")
+def run_notifications(
+    run_id: str,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_manager),
+):
+    """Who was notified about this run, on which channel, and whether it landed.
+
+    Manager+ because the response lists every approved user's email address.
+    """
+    if svc.get_execution(session, run_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    return [NotificationDeliveryOut.model_validate(r)
+            for r in notifications.deliveries_for_run(session, run_id)]
