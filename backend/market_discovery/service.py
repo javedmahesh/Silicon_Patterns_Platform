@@ -124,10 +124,14 @@ def discovery_health(session: Session, settings, *, registry: SourceRegistry | N
     reg = registry if registry is not None else default_registry
     enabled = getattr(settings, "discovery_sources", []) or []
     health = reg.health(enabled)
+    missing = reg.missing_sources(enabled)
     return {
         "enabled": bool(getattr(settings, "discovery_enabled", True)),
         "registered_sources": reg.names(),
         "enabled_sources": [s.name for s in reg.enabled_sources(enabled)],
+        # Configured names no connector answers to. Non-empty here is the reason a run
+        # reports zero sources, and the one thing an operator cannot infer from the rest.
+        "misconfigured_sources": {name: reg.suggest(name) for name in missing},
         "sources": {
             name: {"status": h.status.value, "detail": h.detail} for name, h in health.items()
         },

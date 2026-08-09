@@ -99,6 +99,7 @@ class DiscoveryPipeline:
         result = DiscoveryResult(run_id=run_id, started_at=started)
         clock = time.monotonic()
 
+        result.configured = len([n for n in self.config.enabled_sources if n and n.strip()])
         runnable, skipped = self.registry.runnable_sources(self.config.enabled_sources)
         for health in skipped:
             result.sources.append(SourceOutcome(name=health.name, status=SourceStatus.UNAVAILABLE,
@@ -106,9 +107,13 @@ class DiscoveryPipeline:
         events.pipeline_started(run_id, len(runnable))
 
         if not runnable:
-            # A run with zero sources is a valid, successful no-op — this is exactly
-            # the state the framework ships in, before any connector exists.
-            logger.info("[discovery] no runnable sources — nothing to do")
+            # Nothing configured is a valid, successful no-op — the state the framework
+            # ships in. Something configured that could not run is NOT: it is reported
+            # on the result (above) so the run says why instead of looking identical.
+            logger.info("[discovery] no runnable sources — %s",
+                        "nothing configured" if not result.sources
+                        else f"{len(result.sources)} configured source(s) unavailable: "
+                             + "; ".join(f"{s.name}: {s.error}" for s in result.sources))
             result.finished_at = datetime.now(timezone.utc)
             result.duration_ms = int((time.monotonic() - clock) * 1000)
             events.pipeline_completed(run_id, result)
