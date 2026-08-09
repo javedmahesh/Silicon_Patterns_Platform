@@ -674,3 +674,164 @@ def test_hyphenated_url_fragments_are_filtered_from_keywords():
         "x", title="Acme | NVIDIA Customer Stories",
         keywords="some-long-url-fragment-here, edge AI"))
     assert raw["technologies"] == ["edge AI"]
+
+
+# ============================================== production zero-result diagnosis
+# Production ran with DISCOVERY_SOURCES=nvidia and reported "0 processed". These pin
+# the cause (the connector registers as `nvidia_inception`, so `nvidia` selects
+# nothing) and the observability that now makes it self-evident from Run History.
+def test_the_connector_registers_under_its_canonical_name():
+    """Registration is verified, never assumed from the module existing."""
+    from backend.market_discovery.registry import SourceRegistry
+
+    registry = SourceRegistry()
+    registry.autodiscover()
+    assert "nvidia_inception" in registry.names()
+    assert registry.get("nvidia_inception") is not None
+    ok, reason = registry.get("nvidia_inception").validate()
+    assert ok, reason
+
+
+def test_the_configured_name_nvidia_selects_nothing():
+    """The production defect, pinned: `nvidia` is not the connector's name."""
+    from backend.market_discovery.registry import SourceRegistry
+
+    registry = SourceRegistry()
+    registry.autodiscover()
+    settings = Settings(_env_file=None, discovery_sources_raw="nvidia")
+    assert settings.discovery_sources == ["nvidia"]        # parsing is not the problem
+    assert registry.enabled_sources(settings.discovery_sources) == []
+    assert registry.missing_sources(settings.discovery_sources) == ["nvidia"]
+
+
+def test_the_canonical_name_selects_the_connector():
+    from backend.market_discovery.registry import SourceRegistry
+
+    registry = SourceRegistry()
+    registry.autodiscover()
+    for raw in ("nvidia_inception", " NVIDIA_INCEPTION ", "nvidia_inception,"):
+        selected = registry.enabled_sources(Settings(
+            _env_file=None, discovery_sources_raw=raw).discovery_sources)
+        assert [s.name for s in selected] == ["nvidia_inception"], raw
+
+
+def test_a_misconfigured_name_suggests_the_registered_one():
+    from backend.market_discovery.registry import SourceRegistry
+
+    registry = SourceRegistry()
+    registry.autodiscover()
+    assert registry.suggest("nvidia") == "nvidia_inception"
+    assert registry.suggest("nvidia-inception") == "nvidia_inception"
+    assert registry.suggest("totally-unrelated") == ""
+
+
+def test_a_misconfigured_source_fails_the_run_instead_of_looking_empty():
+    """The observability fix: 'nvidia' must not read as a clean no-op."""
+    from backend.market_discovery import run_discovery
+    from backend.market_discovery.registry import SourceRegistry
+    from master_db.local import make_session_factory
+
+    registry = SourceRegistry()
+    registry.autodiscover()
+    with make_session_factory(":memory:")() as session:
+        result = run_discovery(session, Settings(_env_file=None, discovery_sources_raw="nvidia"),
+                               registry=registry)
+    assert result.status == "failed"
+    assert result.configured == 1 and result.executed == 0
+    outcome = result.sources[0]
+    assert outcome.name == "nvidia" and "not registered" in outcome.error
+    assert "nvidia_inception" in outcome.error           # names the fix
+    assert "configured=1 executed=0" in result.summary()
+
+
+def test_no_configured_sources_stays_a_clean_no_op():
+    """Backward compatibility: the shipped default must not start reporting failure."""
+    from backend.market_discovery import run_discovery
+    from backend.market_discovery.registry import SourceRegistry
+    from master_db.local import make_session_factory
+
+    with make_session_factory(":memory:")() as session:
+        result = run_discovery(session, Settings(_env_file=None, discovery_sources_raw=""),
+                               registry=SourceRegistry())
+    assert result.status == "success" and result.sources == []
+    assert result.configured == 0 and result.executed == 0
+
+
+def test_the_stage_reports_the_misconfiguration_to_run_history(monkeypatch):
+    """What an operator actually sees: status + the reason, not a silent success."""
+    from backend.market_discovery import service
+    from backend.market_discovery.registry import SourceRegistry
+    from master_db.local import make_session_factory
+    from orchestrator.stages import STAGES
+
+    registry = SourceRegistry()
+    registry.autodiscover()
+    monkeypatch.setattr(service, "default_registry", registry)
+    monkeypatch.setattr("backend.config.get_settings",
+                        lambda: Settings(_env_file=None, discovery_sources_raw="nvidia"))
+    with make_session_factory(":memory:")() as session:
+        metrics = STAGES["market_discovery"].ingest(session)
+    assert metrics.status == "failed"
+    assert any("not registered" in e and "nvidia_inception" in e for e in metrics.errors)
+    assert "configured=1 executed=0" in metrics.notes
+
+
+def test_zero_fetched_is_distinguishable_from_a_misconfigured_source():
+    """A source that ran and found nothing is a different state from one that never ran."""
+    from backend.market_discovery import run_discovery
+    from backend.market_discovery.registry import SourceRegistry
+    from master_db.local import make_session_factory
+
+    registry = SourceRegistry()
+    registry.register(NvidiaInceptionSource(config=_config(), crawl_service=StubCrawl(sitemap=[])))
+    with make_session_factory(":memory:")() as session:
+        result = run_discovery(session, Settings(_env_file=None,
+                                                 discovery_sources_raw="nvidia_inception"),
+                               registry=registry)
+    assert result.status == "success"                    # it ran; there was nothing there
+    assert result.configured == 1 and result.executed == 1
+    assert result.fetched == 0 and result.sources[0].error == ""
+
+
+def test_already_seen_candidates_are_distinguishable_from_a_fetch_failure():
+    """Incremental skip and provider failure both yield 0 fetched — for opposite reasons."""
+    from backend.market_discovery.schemas import DiscoveryContext
+
+    page = _study("nanosilicon", title="NanoSilicon | NVIDIA Customer Stories",
+                  description="ASIC and RISC-V SoC design.",
+                  links=["https://www.nanosilicon.io/"])
+    url = f"{CS}/nanosilicon/"
+
+    seen = _source(StubCrawl(pages={url: page}, sitemap=[url]),
+                   fetch_company_pages=True, incremental=True)
+    known = DiscoveryContext(known_source_ids={"nvidia_inception": frozenset({"nanosilicon"})})
+    assert seen.discover(known) == []                    # already stored, nothing fetched
+
+    broken = _source(StubCrawl(pages={}, sitemap=[url], fail={url}),
+                     fetch_company_pages=True, incremental=False)
+    # A failed page keeps its enumeration-level record, so the run degrades rather
+    # than silently reporting the same zero an up-to-date run would.
+    assert len(broken.discover(DiscoveryContext())) == 1
+
+
+def test_connector_tests_never_touch_a_real_database():
+    """Every connector test drives a stub crawl service and an in-memory database.
+
+    Checked over the module's CODE with this function removed — otherwise the
+    assertion's own vocabulary is the match it is looking for.
+    """
+    import ast
+    import pathlib
+
+    tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+    tree.body = [n for n in tree.body
+                 if not (isinstance(n, ast.FunctionDef) and n.name.endswith("real_database"))]
+    code = ast.unparse(tree).lower()
+    for marker in ("postgres", "supabase", "master_local", "database_url"):
+        assert marker not in code, f"connector tests must not reference {marker}"
+    # Every session in this module is in-memory.
+    sessions = [n for n in ast.walk(tree)
+                if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "make_session_factory"]
+    assert sessions, "expected the persistence tests to build a session"
+    assert all(isinstance(c.args[0], ast.Constant) and c.args[0].value == ":memory:"
+               for c in sessions)

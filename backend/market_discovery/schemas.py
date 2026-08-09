@@ -244,6 +244,10 @@ class DiscoveryResult:
     started_at: datetime = field(default_factory=_utcnow)
     finished_at: datetime | None = None
     duration_ms: int = 0
+    # How many source names configuration asked for, vs what actually ran. When these
+    # disagree the run says so — "configured=1 sources=0" is the signature of a name
+    # that matches no registered connector, which otherwise looks like a clean no-op.
+    configured: int = 0
     sources: list[SourceOutcome] = field(default_factory=list)
     processed: list[ProcessedCandidate] = field(default_factory=list)
 
@@ -291,7 +295,17 @@ class DiscoveryResult:
             return "failed"
         return "partial" if self.failed_sources else "success"
 
+    @property
+    def executed(self) -> int:
+        """Sources that actually ran (an unavailable one is counted, never executed)."""
+        return sum(1 for s in self.sources if s.status is not SourceStatus.UNAVAILABLE)
+
+    @property
+    def unavailable_sources(self) -> list[SourceOutcome]:
+        return [s for s in self.sources if s.status is SourceStatus.UNAVAILABLE]
+
     def summary(self) -> str:
-        return (f"sources={len(self.sources)} fetched={self.fetched} new={self.new} "
+        return (f"configured={self.configured} executed={self.executed} "
+                f"sources={len(self.sources)} fetched={self.fetched} new={self.new} "
                 f"updated={self.updated} duplicates={self.duplicates} "
                 f"rejected={self.rejected} below_threshold={self.below_threshold}")

@@ -885,3 +885,53 @@ def test_a_registered_connector_still_requires_explicit_enablement(registry):
     registry.autodiscover()
     assert registry.names(), "expected at least one connector to be registered"
     assert registry.enabled_sources(Settings(_env_file=None).discovery_sources) == []
+
+
+# ================================= configured-but-unregistered source reporting
+# A configured name that matches no connector used to be a log line only, so the run
+# looked identical to "nothing configured" — a successful no-op. That made the
+# production "0 processed" indistinguishable from a working, idle engine.
+def test_an_unregistered_configured_source_is_reported_not_swallowed(registry):
+    registry.register(FakeSource([]))
+    runnable, skipped = registry.runnable_sources(["fake", "typo_source"])
+
+    assert [s.name for s in runnable] == ["fake"]
+    assert [h.name for h in skipped] == ["typo_source"]
+    assert "not registered" in skipped[0].detail
+    assert skipped[0].status is SourceStatus.UNAVAILABLE
+
+
+def test_missing_sources_lists_only_the_unregistered_names(registry):
+    registry.register(FakeSource([]))
+    assert registry.missing_sources(["fake", "nope"]) == ["nope"]
+    assert registry.missing_sources(["fake"]) == []
+    assert registry.missing_sources([]) == []
+    assert registry.missing_sources(None) == []
+    assert registry.missing_sources(["*"]) == []          # wildcard cannot be missing
+
+
+def test_a_near_miss_name_gets_a_suggestion(registry):
+    registry.register(FakeSource([]))
+    assert registry.suggest("fak") == "fake"
+    assert registry.suggest("zzzzzz") == ""
+
+
+def test_the_run_distinguishes_misconfigured_from_idle(session, registry):
+    """configured=1 executed=0 is the signature of a name nothing answers to."""
+    result = service.run_discovery(session, _settings(discovery_sources_raw="ghost"),
+                                   registry=registry)
+    assert result.status == "failed"
+    assert result.configured == 1 and result.executed == 0
+    assert "configured=1 executed=0" in result.summary()
+
+    idle = service.run_discovery(session, _settings(discovery_sources_raw=""),
+                                 registry=registry)
+    assert idle.status == "success" and idle.configured == 0 and idle.sources == []
+
+
+def test_health_names_the_misconfigured_sources(session, registry):
+    registry.register(FakeSource([]))
+    health = service.discovery_health(session, _settings(discovery_sources_raw="fake,ghost"),
+                                      registry=registry)
+    assert health["enabled_sources"] == ["fake"]
+    assert "ghost" in health["misconfigured_sources"]

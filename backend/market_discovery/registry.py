@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib
 import logging
 import pkgutil
+from difflib import get_close_matches
 from typing import Iterable
 
 from backend.market_discovery.base_source import DiscoverySource
@@ -105,34 +106,69 @@ class SourceRegistry:
         return isinstance(name, str) and name.strip().lower() in self._sources
 
     # ------------------------------------------------------------- selection
+    def _wanted(self, enabled: Iterable[str] | None) -> list[str]:
+        """Configured names, normalized and de-duplicated. ``[]`` when nothing is set."""
+        if enabled is None:
+            return []
+        return sorted(dict.fromkeys(n.strip().lower() for n in enabled if n and n.strip()))
+
     def enabled_sources(self, enabled: Iterable[str] | None) -> list[DiscoverySource]:
         """The sources that should run, in deterministic (name) order.
 
-        A configured name that isn't registered is a warning, not an error — a deploy
-        naming a connector that hasn't shipped yet degrades to running the rest.
+        A configured name that isn't registered is skipped here rather than raised —
+        a deploy naming a connector that hasn't shipped yet still runs the rest. It is
+        NOT silent: :meth:`missing_sources` reports it, and
+        :meth:`runnable_sources` turns it into a source-level failure so the run says
+        so instead of looking like a clean no-op.
         """
-        if enabled is None:
-            return []
-        wanted = [n.strip().lower() for n in enabled if n and n.strip()]
+        wanted = self._wanted(enabled)
         if "*" in wanted:
             return self.all()
-        out: list[DiscoverySource] = []
-        for name in sorted(dict.fromkeys(wanted)):
-            source = self._sources.get(name)
-            if source is None:
-                logger.warning("[discovery] configured source %r is not registered (skipped)", name)
-                continue
-            out.append(source)
-        return out
+        return [self._sources[n] for n in wanted if n in self._sources]
+
+    def missing_sources(self, enabled: Iterable[str] | None) -> list[str]:
+        """Configured names with no registered source, in deterministic order.
+
+        The answer to "discovery was enabled but nothing ran" — by far the most common
+        cause is a name that does not match what the connector registers itself as.
+        """
+        wanted = self._wanted(enabled)
+        if "*" in wanted:
+            return []
+        return [n for n in wanted if n not in self._sources]
+
+    def suggest(self, name: str) -> str:
+        """The closest registered name to ``name``, or "" when nothing is close.
+
+        Turns "0 sources ran" into "you wrote nvidia, the connector is
+        nvidia_inception" without anyone having to read the source tree.
+        """
+        close = get_close_matches((name or "").strip().lower(), self.names(), n=1, cutoff=0.4)
+        if close:
+            return close[0]
+        # A prefix match catches the qualified-name case ("nvidia" -> "nvidia_inception")
+        # that difflib scores too low to return on its own.
+        stem = (name or "").strip().lower()
+        return next((n for n in self.names() if stem and n.startswith(stem)), "")
 
     def runnable_sources(self, enabled: Iterable[str] | None) -> tuple[list[DiscoverySource], list[SourceHealth]]:
         """Enabled sources that also pass :meth:`validate`, plus the ones that didn't.
 
         Validating up front means a missing credential shows as a skipped source with a
-        reason, instead of an exception in the middle of a run.
+        reason, instead of an exception in the middle of a run. A configured name that
+        is not registered at all is reported the same way — as an unavailable source —
+        because "the name is wrong" and "the credential is missing" are equally the
+        operator's problem and equally invisible if only logged.
         """
         runnable: list[DiscoverySource] = []
         skipped: list[SourceHealth] = []
+        for name in self.missing_sources(enabled):
+            hint = self.suggest(name)
+            detail = ("not registered — no connector uses this name"
+                      + (f"; did you mean {hint!r}?" if hint else "")
+                      + f" (registered: {', '.join(self.names()) or 'none'})")
+            logger.warning("[discovery] configured source %r is %s", name, detail)
+            skipped.append(SourceHealth(name, SourceStatus.UNAVAILABLE, detail))
         for source in self.enabled_sources(enabled):
             try:
                 ok, reason = source.validate()
