@@ -47,6 +47,16 @@ logger = logging.getLogger("market_discovery.nvidia_inception")
 _SITEMAP_URL_CEILING = 20_000
 
 
+class EnumerationFailed(RuntimeError):
+    """Not one enumeration surface could be retrieved.
+
+    Raised so the pipeline records this source as FAILED with a reason, instead of a
+    successful run that returned nothing. Those two look identical from Run History
+    otherwise — ``fetched=0`` either way — and that ambiguity hid a completely
+    unreachable source in production for days.
+    """
+
+
 class NvidiaInceptionSource(CrawlingDiscoverySource):
     """Discovers companies from NVIDIA's public Inception / customer-story pages."""
 
@@ -100,16 +110,38 @@ class NvidiaInceptionSource(CrawlingDiscoverySource):
 
         urls: list[str] = []
         pages_crawled = 0
+        # Did ANY enumeration surface actually answer? Zero URLs from a surface that
+        # responded is a real (if surprising) result; zero URLs because nothing could
+        # be reached is a failure, and the two must not report the same way.
+        reached = False
 
         if config.use_sitemap:
-            found, crawled = self._from_sitemap(context)
+            found, crawled, ok = self._from_sitemap(context)
             urls.extend(found)
             pages_crawled += crawled
+            reached |= ok
 
         if len(urls) < budget:
-            found, crawled = self._from_indexes(context, exclude=set(urls))
+            found, crawled, ok = self._from_indexes(context, exclude=set(urls))
             urls.extend(found)
             pages_crawled += crawled
+            reached |= ok
+
+        if not urls and not reached:
+            # Two distinct causes, and the message must not guess between them:
+            # nothing was ever requested (every surface refused or switched off), or
+            # everything was requested and nothing answered.
+            where = (f"sitemap={config.sitemap_url}" if config.use_sitemap
+                     else "sitemap=disabled") + f", index paths={len(config.index_paths)}"
+            reason = (
+                "every enumeration surface was skipped before any request was made — "
+                "robots.txt disallowed it, or none is configured"
+                if pages_crawled == 0 else
+                f"{pages_crawled} enumeration request(s) were made and none returned "
+                "usable content — a retrieval problem (network egress, DNS, TLS or the "
+                "crawl provider), not an absence of companies"
+            )
+            raise EnumerationFailed(f"{reason}. Source: {config.base_url} ({where}).")
 
         records: list[dict[str, Any]] = []
         skipped_known = 0
@@ -137,25 +169,30 @@ class NvidiaInceptionSource(CrawlingDiscoverySource):
         return detailed
 
     # ------------------------------------------------------------------ sources
-    def _from_sitemap(self, context: DiscoveryContext) -> tuple[list[str], int]:
-        """Case-study URLs from the locale sitemap — one request for the whole set."""
+    def _from_sitemap(self, context: DiscoveryContext) -> tuple[list[str], int, bool]:
+        """Case-study URLs from the locale sitemap — one request for the whole set.
+
+        Returns ``(urls, pages_crawled, reached)``. ``reached`` says the sitemap
+        answered, which is what separates "NVIDIA published nothing new" from "we
+        never got a response".
+        """
         url = self.config.sitemap_url
         if not robots_allows(url):
             logger.warning("[nvidia_inception] sitemap %s is disallowed by robots.txt", url)
-            return [], 0
+            return [], 0, False
         try:
             found = self.crawl.sitemap_urls(url, self._sitemap_options())
         except Exception:      # noqa: BLE001 - the service already contains failures
             logger.warning("[nvidia_inception] sitemap %s unavailable", url, exc_info=True)
-            return [], 1
+            return [], 1, False
         urls = [u for u in parser.filter_case_study_urls(found, base_url=self.config.base_url)
                 if robots_allows(u)]
         logger.info("[nvidia_inception] sitemap yielded %d case study url(s) from %d entries",
                     len(urls), len(found))
-        return urls, 1
+        return urls, 1, True
 
     def _from_indexes(self, context: DiscoveryContext,
-                      *, exclude: set[str]) -> tuple[list[str], int]:
+                      *, exclude: set[str]) -> tuple[list[str], int, bool]:
         """Case-study links rendered server-side on the public index pages.
 
         Secondary to the sitemap: these pages load most of their listing client-side,
@@ -164,6 +201,7 @@ class NvidiaInceptionSource(CrawlingDiscoverySource):
         """
         out: list[str] = []
         crawled = 0
+        reached = False
         for path in self.config.index_paths[: max(1, self.config.max_pages)]:
             url = self.config.index_url(path)
             if not robots_allows(url):
@@ -173,13 +211,14 @@ class NvidiaInceptionSource(CrawlingDiscoverySource):
             crawled += 1
             if result is None:
                 continue
+            reached = True
             for entry in parser.parse_index_page(result.page):
                 link = entry.get("source_url", "")
                 if link and link not in exclude and link not in out and robots_allows(link):
                     out.append(link)
         if out:
             logger.info("[nvidia_inception] index pages yielded %d additional url(s)", len(out))
-        return out, crawled
+        return out, crawled, reached
 
     def _enrich(self, records: list[dict[str, Any]],
                 context: DiscoveryContext) -> tuple[list[dict[str, Any]], int, int]:
