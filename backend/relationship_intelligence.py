@@ -398,22 +398,26 @@ def _company_alerts(company, ranked, ldr, opps, demand, lead, msgs_by_dm, bundle
     name = company.company_name or company.company_domain
     out: list[AlertOut] = []
 
-    def mk(t, sev, title, detail, at="", dm_id=None):
+    def mk(t, sev, title, detail, at="", dm_id=None, opp_id=None):
         out.append(AlertOut(type=t, severity=sev, company_domain=company.company_domain,
                             company_name=name, title=title, detail=detail, at=str(at or ""),
-                            decision_maker_id=dm_id))
+                            decision_maker_id=dm_id, opportunity_id=opp_id))
 
     for s in ldr[:8]:
         t, sev, title = _MOVE_ALERT.get(s.movement_type, ("leadership_change", "medium", "Leadership change"))
+        # `effective_date` only — never computed_at. The leadership stage re-derives
+        # every signal on each run, so falling back to it would stamp a 2024 move with
+        # today's date and present it as current.
         mk(t, sev, f"{title}: {s.to_title or s.person_name}", s.summary or "",
-           s.effective_date or s.computed_at, s.decision_maker_id)
+           s.effective_date, s.decision_maker_id)
     if demand is not None and ((demand.hiring_trend or "").lower() == "up" or (demand.total_engineering_jobs or 0) >= 10):
         mk("hiring_spike", "medium", f"Hiring spike: {demand.total_engineering_jobs} engineering roles",
            demand.primary_focus or "", demand.newest_job_date or demand.ingested_at)
     for o in opps[:5]:
         mk("new_opportunity", "info",
            o.article_title or (o.opportunity_type or "Opportunity").replace("_", " ").title(),
-           o.opportunity_type or "", o.published_date or o.ingested_at)
+           o.opportunity_type or "", o.published_date or o.ingested_at,
+           opp_id=o.opportunity_id)
     # relationship becoming stale
     for rc in ranked:
         b = bundles.get(rc.dm.id)
@@ -502,29 +506,77 @@ def _graph(company, ranked, by_dept, ldr, opps, msgs_by_dm, lead) -> Relationshi
 # --------------------------------------------------------------------------- #
 # Global smart alerts (Dashboard) — bounded cross-company scan
 # --------------------------------------------------------------------------- #
+_SEV_RANK = {"high": 0, "medium": 1, "info": 2}
+#: Sorts after every dated alert. An alert whose event date is unknown is still
+#: shown — it just cannot claim to be recent.
+_UNDATED = (0, 0, 0)
+
+
+def _event_key(value) -> tuple[int, int, int]:
+    """A comparable (y, m, d) from whatever shape an event date arrives in.
+
+    Event dates are not uniform: leadership signals store ``YYYY-MM``, opportunities
+    a normalized ``YYYY-MM-DD``, decision makers a datetime. Anything unparseable —
+    including the empty string — returns :data:`_UNDATED` rather than being dropped.
+    """
+    if isinstance(value, datetime):
+        return (value.year, value.month, value.day)
+    text = str(value or "").strip()
+    if len(text) < 4 or not text[:4].isdigit():
+        return _UNDATED
+    parts = text.replace("/", "-").split("-")
+    try:
+        year = int(parts[0])
+        month = int(parts[1][:2]) if len(parts) > 1 and parts[1][:2].isdigit() else 1
+        day = int(parts[2][:2]) if len(parts) > 2 and parts[2][:2].isdigit() else 1
+    except (ValueError, IndexError):
+        return _UNDATED
+    return (year, month, day)
+
+
 def smart_alerts(session: Session, limit: int = 25) -> list[AlertOut]:
+    """Cross-company alerts, newest event first.
+
+    Freshness is the date the event HAPPENED, never the date its row was last
+    recomputed. The leadership stage rebuilds every signal on each run, so
+    ``computed_at`` is the same "now" for a 2024 departure and a yesterday's hire —
+    ordering or selecting on it made two-year-old events read as today's news, which
+    is what made the dashboard look frozen.
+    """
     out: list[AlertOut] = []
     names = {c.company_domain: c.company_name for c in session.scalars(select(Company))}
 
+    # Reuses the platform's one definition of leadership recency (`event_age_days`
+    # ascending, undated last) — the same ordering the company profile uses, so the
+    # dashboard and the profile cannot disagree about what "recent" means.
     sigs = list(session.scalars(
-        select(LeadershipSignal).order_by(LeadershipSignal.computed_at.desc()).limit(40)))
+        select(LeadershipSignal).order_by(*repo._ldr_recency_order()).limit(40)))
     for s in sigs:
         t, sev, title = _MOVE_ALERT.get(s.movement_type, ("leadership_change", "medium", "Leadership change"))
         out.append(AlertOut(type=t, severity=sev, company_domain=s.company_domain or "",
                             company_name=names.get(s.company_domain, s.company_name or ""),
                             title=f"{title}: {s.to_title or s.person_name}", detail=s.summary or "",
-                            at=str(s.effective_date or s.computed_at or ""),
+                            # Deliberately NOT falling back to computed_at: that is a
+                            # recomputation stamp, and using it would date an old event
+                            # to today — the exact defect this function had.
+                            at=str(s.effective_date or ""),
                             decision_maker_id=s.decision_maker_id))
 
+    # `published_date` is when the article ran; `ingested_at` only when we saw it.
     opps = list(session.scalars(
-        select(Opportunity).order_by(Opportunity.ingested_at.desc()).limit(25)))
+        select(Opportunity)
+        .order_by(Opportunity.published_date.desc().nullslast(),
+                  Opportunity.ingested_at.desc())
+        .limit(25)))
     for o in opps:
         out.append(AlertOut(type="new_opportunity", severity="info", company_domain=o.company_domain,
                             company_name=names.get(o.company_domain, o.company_name or ""),
                             title=o.article_title or (o.opportunity_type or "Opportunity").replace("_", " ").title(),
-                            detail=o.opportunity_type or "", at=str(o.published_date or o.ingested_at or "")))
+                            detail=o.opportunity_type or "", at=str(o.published_date or o.ingested_at or ""),
+                            opportunity_id=o.opportunity_id))
 
-    # high-value contacts added recently — batch contexts to avoid N+1
+    # high-value contacts added recently — batch contexts to avoid N+1. Here the
+    # ingestion time IS the event: the alert is that the contact was added.
     recent_dms = list(session.scalars(
         select(DecisionMaker).order_by(DecisionMaker.ingested_at.desc()).limit(60)))
     ctxs = dmi.build_company_contexts(session, [d.company_domain for d in recent_dms])
@@ -541,6 +593,19 @@ def smart_alerts(session: Session, limit: int = 25) -> list[AlertOut]:
                                 detail=f"{d.current_title or ''} · influence {intel.influence_score}",
                                 at=str(d.ingested_at or ""), decision_maker_id=d.id))
 
-    sev_rank = {"high": 0, "medium": 1, "info": 2}
-    out.sort(key=lambda a: (sev_rank.get(a.severity, 3), a.at), reverse=False)
-    return out[:limit]
+    # One row per real-world event. A recomputed signal that lands twice in the scan
+    # (same move, same company, re-derived under a new signal_id) must not take two
+    # slots from a feed of 25.
+    deduped: dict[tuple, AlertOut] = {}
+    for a in out:
+        key = (a.type, a.company_domain, a.title)
+        best = deduped.get(key)
+        if best is None or _event_key(a.at) > _event_key(best.at):
+            deduped[key] = a
+
+    # Newest event first; severity breaks ties between events of the same date, so a
+    # high-severity move outranks an opportunity published the same day without
+    # letting a 2024 departure outrank everything published since.
+    return sorted(deduped.values(),
+                  key=lambda a: (_event_key(a.at), -_SEV_RANK.get(a.severity, 3)),
+                  reverse=True)[:limit]

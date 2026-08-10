@@ -1754,6 +1754,11 @@ class AlertOut(BaseModel):
     detail: str = ""
     at: str = ""
     decision_maker_id: int | None = None
+    # Set when the alert was raised BY a specific opportunity, so the UI can open
+    # that exact record instead of guessing from the headline. Optional: most alert
+    # types (leadership moves, hiring spikes, contact changes) have no single
+    # opportunity behind them and carry only the company.
+    opportunity_id: str | None = None
 
 
 class GraphNodeOut(BaseModel):

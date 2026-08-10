@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/Badge";
 import { EmptyState, ErrorState } from "@/components/ui/EmptyState";
 import { SectionPanel } from "@/components/ui/SectionPanel";
 import { SkeletonLines } from "@/components/ui/Skeleton";
+import { alertHref } from "@/lib/alertRoute";
 import { CHART, tooltipLabelStyle, tooltipStyle } from "@/lib/chartTheme";
 import { useAlerts, useAnalyticsSummary, useLeadershipSignals, useOpportunities } from "@/lib/api/queries";
 import { enumLabel, fmtInt, fmtRelative, fmtScore } from "@/lib/format";
@@ -72,7 +73,7 @@ export function DashboardPage() {
               {alerts.data.slice(0, 8).map((a, i) => (
                 <Link
                   key={i}
-                  to={a.company_domain ? `/companies/${encodeURIComponent(a.company_domain)}` : "/decision-makers"}
+                  to={alertHref(a)}
                   className="-mx-3.5 flex items-center justify-between gap-3 px-3.5 py-2 hover:bg-raised"
                 >
                   <span className="min-w-0">
