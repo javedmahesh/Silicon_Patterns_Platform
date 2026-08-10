@@ -199,5 +199,217 @@ def test_global_alerts(client):
     assert types & {"executive_departed", "new_opportunity", "promotion", "executive_joined"}
 
 
+# ------------------------------------------------- alert -> opportunity handover
+# A Smart Alert is an entry point into Opportunities, so it has to carry an
+# identifier the Opportunities page can act on. A headline is a label, not a key.
+def test_an_opportunity_alert_carries_its_opportunity_id(client):
+    alerts = client.get("/alerts", headers=MEMBER).json()
+    opp_alerts = [a for a in alerts if a["type"] == "new_opportunity"]
+    assert opp_alerts, "expected at least one opportunity-derived alert"
+    assert all(a["opportunity_id"] for a in opp_alerts)
+
+
+def test_company_scoped_opportunity_alerts_carry_their_id(client):
+    alerts = _rel(client)["alerts"]
+    opp_alerts = [a for a in alerts if a["type"] == "new_opportunity"]
+    assert opp_alerts and all(a["opportunity_id"] for a in opp_alerts)
+
+
+def test_an_opportunity_alert_id_resolves_to_a_real_opportunity(client):
+    """The handover is only useful if the id opens something."""
+    alerts = client.get("/alerts", headers=MEMBER).json()
+    oid = next(a["opportunity_id"] for a in alerts if a["type"] == "new_opportunity")
+    assert client.get(f"/opportunities/{oid}", headers=MEMBER).status_code == 200
+
+
+def test_non_opportunity_alerts_leave_the_id_empty(client):
+    """Leadership moves and contact changes have no single opportunity behind them —
+    the field stays null rather than pointing somewhere arbitrary."""
+    alerts = client.get("/alerts", headers=MEMBER).json()
+    others = [a for a in alerts if a["type"] != "new_opportunity"]
+    assert others and all(a["opportunity_id"] is None for a in others)
+
+
+def test_every_alert_can_be_routed(client):
+    """Alerts without an opportunity still carry the company, which is what the
+    Opportunities page filters on."""
+    alerts = client.get("/alerts", headers=MEMBER).json()
+    assert alerts
+    assert all(a["opportunity_id"] or a["company_domain"] for a in alerts)
+
+
+def test_opportunities_can_be_filtered_by_the_company_an_alert_names(client):
+    """The destination filter an alert relies on."""
+    alerts = client.get("/alerts", headers=MEMBER).json()
+    domain = next(a["company_domain"] for a in alerts if a["company_domain"])
+    page = client.get("/opportunities", headers=MEMBER,
+                      params={"company_domain": domain, "signal_category": "ALL"}).json()
+    assert all(o["company_domain"] == domain for o in page["items"])
+
+
 def test_relationships_404(client):
     assert client.get("/decision-makers/company/nope.com/relationships", headers=MEMBER).status_code == 404
+
+
+# =============================================== Smart Alert freshness semantics
+# Production showed 2024-2025 leadership events at the top of "Smart alerts". The
+# leadership stage re-derives every signal on each run, so `computed_at` was today
+# for ALL of them - selecting or ordering on it dated old events to now. These pin
+# the event date as the only thing that decides freshness.
+from sqlalchemy import select as _select   # noqa: E402
+from sqlalchemy.orm import Session as _Session   # noqa: E402
+
+from backend import relationship_intelligence as _reli   # noqa: E402
+from master_db.local import make_session_factory   # noqa: E402
+
+
+def _alerts_session():
+    """A bare session - smart_alerts() needs no app, and the app fixture is slow."""
+    return make_session_factory(":memory:")()
+
+
+def _co(s: _Session, domain: str, name: str) -> None:
+    s.add(Company(company_domain=domain, canonical_company_id=domain.upper(),
+                  company_name=name, name_key=name.lower(), prospect_type="PRODUCT_COMPANY",
+                  validation_status="VALID", company_tier="INCUMBENT",
+                  discovery_date="2025-01-01"))
+
+
+def _sig(s: _Session, sid: str, domain: str, *, effective: str, age_days: int,
+         computed: datetime, movement: str = "new_executive_hire", title: str = "CTO") -> None:
+    s.add(LeadershipSignal(signal_id=sid, company_domain=domain, company_name=domain,
+                           person_name="P" + sid, movement_type=movement,
+                           seniority_band="c_level", to_title=title, effective_date=effective,
+                           event_age_days=age_days, confidence="high", computed_at=computed))
+
+
+def test_an_old_event_recomputed_today_is_not_a_current_alert():
+    """Case A: event 2024-06, row recomputed now. It must still read as 2024."""
+    with _alerts_session() as s:
+        _co(s, "old.com", "Oldco")
+        _sig(s, "old-1", "old.com", effective="2024-06", age_days=800, computed=NOW)
+        s.commit()
+        alert = next(a for a in _reli.smart_alerts(s) if a.company_domain == "old.com")
+    assert alert.at.startswith("2024-06")
+    assert str(NOW.year) not in alert.at          # never stamped with the recompute date
+
+
+def test_a_new_event_outranks_an_old_one_recomputed_at_the_same_moment():
+    """Case B: identical computed_at, different event dates - the event decides."""
+    with _alerts_session() as s:
+        _co(s, "old.com", "Oldco")
+        _co(s, "new.com", "Newco")
+        _sig(s, "old-1", "old.com", effective="2024-06", age_days=800, computed=NOW)
+        _sig(s, "new-1", "new.com", effective="2026-08", age_days=1, computed=NOW)
+        s.commit()
+        order = [a.company_domain for a in _reli.smart_alerts(s)]
+    assert order.index("new.com") < order.index("old.com")
+
+
+def test_recomputation_alone_does_not_reorder_the_feed():
+    """The whole defect in one assertion: touching computed_at changes nothing."""
+    with _alerts_session() as s:
+        _co(s, "old.com", "Oldco")
+        _co(s, "new.com", "Newco")
+        _sig(s, "old-1", "old.com", effective="2024-06", age_days=800,
+             computed=NOW - timedelta(days=400))
+        _sig(s, "new-1", "new.com", effective="2026-08", age_days=1,
+             computed=NOW - timedelta(days=400))
+        s.commit()
+        before = [(a.company_domain, a.at) for a in _reli.smart_alerts(s)]
+
+        # The leadership stage re-derives everything; only computed_at moves.
+        for sig in s.scalars(_select(LeadershipSignal)):
+            sig.computed_at = NOW
+        s.commit()
+        after = [(a.company_domain, a.at) for a in _reli.smart_alerts(s)]
+    assert before == after
+
+
+def test_an_undated_event_is_still_shown_just_not_first():
+    """Case C: no effective_date. It must not vanish, and must not claim to be new."""
+    with _alerts_session() as s:
+        _co(s, "old.com", "Oldco")
+        _co(s, "nodate.com", "Nodate")
+        _sig(s, "new-1", "old.com", effective="2026-08", age_days=1, computed=NOW)
+        _sig(s, "und-1", "nodate.com", effective="", age_days=-1, computed=NOW)
+        s.commit()
+        alerts = _reli.smart_alerts(s)
+    domains = [a.company_domain for a in alerts]
+    assert "nodate.com" in domains                      # present
+    assert domains.index("old.com") < domains.index("nodate.com")
+    assert next(a for a in alerts if a.company_domain == "nodate.com").at == ""
+
+
+def test_opportunity_freshness_uses_the_published_date():
+    with _alerts_session() as s:
+        _co(s, "a.com", "Aco")
+        s.add(Opportunity(opportunity_id="op-old", company_domain="a.com", company_name="Aco",
+                          opportunity_type="FUNDING", article_title="Old news",
+                          published_date="2024-01-05", ingested_at=NOW))
+        s.add(Opportunity(opportunity_id="op-new", company_domain="a.com", company_name="Aco",
+                          opportunity_type="FUNDING", article_title="Fresh news",
+                          published_date="2026-08-09", ingested_at=NOW - timedelta(days=400)))
+        s.commit()
+        order = [a.opportunity_id for a in _reli.smart_alerts(s) if a.opportunity_id]
+    assert order.index("op-new") < order.index("op-old")
+
+
+def test_severity_breaks_ties_between_events_of_the_same_date():
+    with _alerts_session() as s:
+        _co(s, "a.com", "Aco")
+        _sig(s, "hire", "a.com", effective="2026-08", age_days=1, computed=NOW,
+             movement="new_executive_hire")
+        s.add(Opportunity(opportunity_id="op-1", company_domain="a.com", company_name="Aco",
+                          opportunity_type="FUNDING", article_title="Same-day news",
+                          published_date="2026-08-01", ingested_at=NOW))
+        s.commit()
+        alerts = _reli.smart_alerts(s)
+    assert alerts[0].severity == "high"          # the executive hire, not the news item
+
+
+def test_a_recomputed_duplicate_does_not_take_two_slots():
+    """A re-derived signal that lands under a new id must not double up."""
+    with _alerts_session() as s:
+        _co(s, "a.com", "Aco")
+        _sig(s, "sig-v1", "a.com", effective="2026-07", age_days=30, computed=NOW)
+        _sig(s, "sig-v2", "a.com", effective="2026-08", age_days=1, computed=NOW)
+        s.commit()
+        alerts = _reli.smart_alerts(s)
+    assert len(alerts) == 1 and alerts[0].at.startswith("2026-08")   # newest kept
+
+
+def test_the_alert_limit_is_respected():
+    with _alerts_session() as s:
+        _co(s, "a.com", "Aco")
+        for i in range(30):
+            s.add(Opportunity(opportunity_id="op-%d" % i, company_domain="a.com",
+                              company_name="Aco", opportunity_type="FUNDING",
+                              article_title="Story %d" % i,
+                              published_date="2026-07-%02d" % (i % 28 + 1),
+                              ingested_at=NOW))
+        s.commit()
+        assert len(_reli.smart_alerts(s, limit=5)) == 5
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("2024-06", (2024, 6, 1)),
+    ("2026-08-09", (2026, 8, 9)),
+    ("2026/08/09", (2026, 8, 9)),
+    ("", (0, 0, 0)),
+    ("not a date", (0, 0, 0)),
+    (None, (0, 0, 0)),
+    (datetime(2025, 3, 4, tzinfo=timezone.utc), (2025, 3, 4)),
+])
+def test_event_key_parses_every_shape_a_date_arrives_in(value, expected):
+    assert _reli._event_key(value) == expected
+
+
+def test_company_alerts_never_date_an_event_by_its_recomputation(client):
+    """The company-scoped path had the same computed_at fallback."""
+    alerts = _rel(client)["alerts"]
+    moves = [a for a in alerts if a["type"] in
+             ("executive_joined", "executive_departed", "promotion", "leadership_change")]
+    assert moves
+    for a in moves:
+        assert a["at"] == "" or len(a["at"]) <= 10   # a YYYY-MM event date, not a timestamp

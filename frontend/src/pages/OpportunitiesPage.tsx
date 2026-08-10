@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ExternalLink, Megaphone } from "lucide-react";
 
@@ -17,7 +17,10 @@ import { useOpportunities } from "@/lib/api/queries";
 import type { OpportunityOut } from "@/lib/api/types";
 import { enumLabel, fmtDate, fmtInt, fmtRelative, fmtScore } from "@/lib/format";
 
-const KEYS = ["page", "opportunity_type", "lifecycle_status", "sort", "date_from", "date_to", "signal_category"] as const;
+// `company_domain` and `opportunity` are the context a Smart Alert hands over. Both
+// are additive: absent, the page behaves exactly as it always has.
+const KEYS = ["page", "opportunity_type", "lifecycle_status", "sort", "date_from", "date_to",
+  "signal_category", "company_domain", "opportunity"] as const;
 
 const SORT_OPTIONS = [
   { value: "newest", label: "Newest first" },
@@ -134,6 +137,7 @@ export function OpportunitiesPage({ fixedCategory }: { fixedCategory?: "LEADERSH
 
   const category = fixedCategory ?? (values.signal_category || "NEWS");
   const isLeadership = category === "LEADERSHIP";
+  const companyDomain = values.company_domain;
 
   const { data, isLoading, isError, error, refetch } = useOpportunities({
     page,
@@ -142,10 +146,25 @@ export function OpportunitiesPage({ fixedCategory }: { fixedCategory?: "LEADERSH
     sort: (values.sort || "newest") as "newest" | "oldest" | "score",
     date_from: values.date_from,
     date_to: values.date_to,
+    company_domain: companyDomain || undefined,
     // "ALL" clears the filter; otherwise scope to the chosen first-class category.
     signal_category: category === "ALL" ? undefined : category,
   });
   const items = data?.items ?? [];
+
+  // A Smart Alert can name the exact record it fired on. Opening it is a one-shot
+  // handover, not sticky state: the param is dropped as soon as the modal is open, so
+  // closing it leaves the user on the filtered list rather than re-opening forever,
+  // and a refresh doesn't resurrect a modal they already dismissed.
+  const deepLinked = values.opportunity;
+  useEffect(() => {
+    if (!deepLinked) return;
+    setActiveId(deepLinked);
+    setValue("opportunity", "");
+  }, [deepLinked, setValue]);
+
+  const companyLabel = items.find((o) => o.company_domain === companyDomain)?.company_name
+    || companyDomain;
 
   const noun = isLeadership ? "leadership signals" : category === "ALL" ? "signals" : "market events";
 
@@ -219,6 +238,21 @@ export function OpportunitiesPage({ fixedCategory }: { fixedCategory?: "LEADERSH
       </PageHeader>
 
       <div className="p-4">
+        {companyDomain && (
+          // The company filter has no control of its own in the bar, so without this
+          // the list would look inexplicably short to anyone arriving from an alert.
+          <div className="mb-2 flex items-center gap-2 text-12 text-fg-subtle">
+            <span>Showing</span>
+            <Badge tone="accent">{companyLabel}</Badge>
+            <button
+              type="button"
+              onClick={() => setValue("company_domain", "")}
+              className="rounded px-1.5 py-0.5 text-11 text-fg-muted hover:bg-raised hover:text-fg"
+            >
+              Show all companies
+            </button>
+          </div>
+        )}
         <div className="panel">
           {isError ? (
             <ErrorState title="Couldn't load opportunities" error={error} onRetry={refetch} />

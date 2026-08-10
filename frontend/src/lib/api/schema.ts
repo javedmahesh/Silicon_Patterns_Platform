@@ -4976,6 +4976,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scheduler/runs/{run_id}/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Notification delivery log for one run (manager+)
+         * @description Who was notified about this run, on which channel, and whether it landed.
+         *
+         *     Manager+ because the response lists every approved user's email address.
+         */
+        get: operations["run_notifications_scheduler_runs__run_id__notifications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scheduler/status": {
         parameters: {
             query?: never;
@@ -6354,6 +6376,8 @@ export interface components {
              * @default
              */
             detail: string;
+            /** Opportunity Id */
+            opportunity_id?: string | null;
             /**
              * Severity
              * @default info
@@ -11735,6 +11759,58 @@ export interface components {
              * @default 0
              */
             score: number;
+        };
+        /**
+         * NotificationDeliveryOut
+         * @description One recipient's delivery record for a run (backend/notifications).
+         */
+        NotificationDeliveryOut: {
+            /**
+             * Attempts
+             * @default 0
+             */
+            attempts: number;
+            /**
+             * Audience
+             * @default all
+             */
+            audience: string;
+            /**
+             * Channel
+             * @default email
+             */
+            channel: string;
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /**
+             * Event Type
+             * @default run_summary
+             */
+            event_type: string;
+            /** Id */
+            id: number;
+            /**
+             * Provider
+             * @default
+             */
+            provider: string;
+            /**
+             * Recipient
+             * @default
+             */
+            recipient: string;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Status
+             * @default pending
+             */
+            status: string;
         };
         /** NotificationOut */
         NotificationOut: {
@@ -29515,6 +29591,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunEngineRecordsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_notifications_scheduler_runs__run_id__notifications_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-dev-role"?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationDeliveryOut"][];
                 };
             };
             /** @description Validation Error */
