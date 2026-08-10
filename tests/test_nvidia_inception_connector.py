@@ -550,11 +550,17 @@ def test_skipped_and_failed_counts_are_logged(caplog):
 
 
 def test_a_disallowed_url_is_logged_as_a_warning(caplog):
+    """Refused before the request — and, with nothing else to try, reported as a
+    failure rather than as an empty but successful run."""
+    from backend.market_discovery.sources.nvidia_inception.connector import EnumerationFailed
+
     crawl = StubCrawl(sitemap=[])
     with caplog.at_level(logging.WARNING, logger="market_discovery.nvidia_inception"):
-        _source(crawl, use_sitemap=False,
-                index_paths=("/en-us/x/?page=2",)).discover(DiscoveryContext())
+        with pytest.raises(EnumerationFailed, match="before any request"):
+            _source(crawl, use_sitemap=False,
+                    index_paths=("/en-us/x/?page=2",)).discover(DiscoveryContext())
     assert "robots.txt" in "\n".join(r.getMessage() for r in caplog.records)
+    assert crawl.requested == []                  # nothing was ever fetched
 
 
 # ====================================================== architectural boundary
@@ -835,3 +841,96 @@ def test_connector_tests_never_touch_a_real_database():
     assert sessions, "expected the persistence tests to build a session"
     assert all(isinstance(c.args[0], ast.Constant) and c.args[0].value == ":memory:"
                for c in sessions)
+
+
+# ======================================= unreachable-source diagnosis (prod #2)
+# Production reported `configured=1 executed=1 sources=1 fetched=0` with no error
+# after the source name was corrected — the same signature a totally unreachable
+# network produces. These pin the difference so the next run answers it outright.
+class _DeadNetwork:
+    """Every request fails, as behind blocked egress or a DNS/TLS failure."""
+
+    def __init__(self):
+        self.requested = []
+
+    def fetch_page(self, url, options=None):
+        self.requested.append(url)
+        raise OSError("[Errno 101] Network is unreachable")
+
+    def sitemap_urls(self, url, options=None):
+        self.requested.append(url)
+        raise OSError("[Errno 101] Network is unreachable")
+
+    def select_provider(self, options=None):
+        class _P:
+            name = "http"
+        return _P()
+
+
+def test_an_unreachable_source_fails_instead_of_reporting_nothing_found():
+    from backend.market_discovery.sources.nvidia_inception.connector import EnumerationFailed
+
+    with pytest.raises(EnumerationFailed, match="retrieval problem"):
+        _source(_DeadNetwork(), fetch_company_pages=True).discover(DiscoveryContext())
+
+
+def test_an_unreachable_source_is_recorded_as_a_failed_source():
+    """What Run History must show: failed, with the reason — not a silent success."""
+    from backend.config import Settings
+    from backend.market_discovery import run_discovery
+    from backend.market_discovery.registry import SourceRegistry
+    from master_db.local import make_session_factory
+
+    registry = SourceRegistry()
+    registry.register(NvidiaInceptionSource(config=_config(fetch_company_pages=True),
+                                            crawl_service=_DeadNetwork()))
+    settings = Settings(_env_file=None, discovery_sources_raw="nvidia_inception",
+                        discovery_retry_count=1, discovery_concurrency=1)
+    with make_session_factory(":memory:")() as session:
+        result = run_discovery(session, settings, registry=registry, persist=False)
+
+    assert result.status == "failed"
+    assert result.configured == 1 and result.fetched == 0
+    assert "retrieval problem" in result.sources[0].error
+    assert result.failed_sources
+
+
+def test_a_reachable_source_with_nothing_new_still_succeeds():
+    """The other side of the same coin: enumeration answered, there was nothing."""
+    from backend.config import Settings
+    from backend.market_discovery import run_discovery
+    from backend.market_discovery.registry import SourceRegistry
+    from master_db.local import make_session_factory
+
+    registry = SourceRegistry()
+    registry.register(NvidiaInceptionSource(config=_config(),
+                                            crawl_service=StubCrawl(sitemap=[])))
+    with make_session_factory(":memory:")() as session:
+        result = run_discovery(session, Settings(_env_file=None,
+                                                 discovery_sources_raw="nvidia_inception"),
+                               registry=registry, persist=False)
+    assert result.status == "success" and result.fetched == 0
+    assert result.sources[0].error == ""
+
+
+def test_everything_already_seen_still_succeeds():
+    """Third zero-result state: reachable, had data, all of it already stored."""
+    url = f"{CS}/nanosilicon/"
+    crawl = StubCrawl(pages={url: _study("nanosilicon",
+                                         title="NanoSilicon | NVIDIA Customer Stories")},
+                      sitemap=[url])
+    source = _source(crawl, fetch_company_pages=True, incremental=True)
+    got = source.discover(DiscoveryContext(
+        known_source_ids={"nvidia_inception": frozenset({"nanosilicon"})}))
+    assert got == []
+    assert crawl.sitemap_requests                 # it DID reach the source
+    assert crawl.requested == []                  # and skipped the known detail page
+
+
+def test_a_partial_enumeration_failure_still_returns_what_it_reached():
+    """A dead sitemap plus a live index page is a degraded run, not a failed one."""
+    crawl = StubCrawl(pages={f"{BASE}/en-us/case-studies/": _page(f"{CS}/",
+                                                                 links=[f"{CS}/a/"])},
+                      sitemap_raises=True)
+    got = _source(crawl, index_paths=("/en-us/case-studies/",)).discover(DiscoveryContext())
+    assert [c.source_id for c in got] == ["a"]
