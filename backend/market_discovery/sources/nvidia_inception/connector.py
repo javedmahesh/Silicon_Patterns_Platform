@@ -180,11 +180,20 @@ class NvidiaInceptionSource(CrawlingDiscoverySource):
         if not robots_allows(url):
             logger.warning("[nvidia_inception] sitemap %s is disallowed by robots.txt", url)
             return [], 0, False
+        # `sitemap()` rather than `sitemap_urls()`: the latter returns the page list
+        # and drops the status, so a FAILED fetch is indistinguishable from a sitemap
+        # that legitimately listed nothing. The crawl service never raises — it
+        # reports — so the failure has to be read off the result.
         try:
-            found = self.crawl.sitemap_urls(url, self._sitemap_options())
-        except Exception:      # noqa: BLE001 - the service already contains failures
-            logger.warning("[nvidia_inception] sitemap %s unavailable", url, exc_info=True)
+            result = self.crawl.sitemap(url, self._sitemap_options())
+        except Exception:      # noqa: BLE001 - defensive; the service contains failures
+            logger.warning("[nvidia_inception] sitemap %s raised", url, exc_info=True)
             return [], 1, False
+        if not result.ok:
+            logger.warning("[nvidia_inception] sitemap %s unavailable: %s",
+                           url, result.error or result.status.value)
+            return [], 1, False
+        found = [p.url for p in result.pages]
         urls = [u for u in parser.filter_case_study_urls(found, base_url=self.config.base_url)
                 if robots_allows(u)]
         logger.info("[nvidia_inception] sitemap yielded %d case study url(s) from %d entries",

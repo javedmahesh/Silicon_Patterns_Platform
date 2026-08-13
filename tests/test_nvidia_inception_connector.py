@@ -46,9 +46,11 @@ def _study(slug, *, title, keywords="", description="", links=()):
 class StubCrawl:
     """Stands in for CrawlService. Records every URL the connector requests."""
 
-    def __init__(self, pages=None, *, sitemap=(), fail=(), raise_on=(), sitemap_raises=False):
+    def __init__(self, pages=None, *, sitemap=(), fail=(), raise_on=(), sitemap_raises=False,
+                 sitemap_fails=False):
         self.pages = pages or {}
-        self.sitemap = list(sitemap)
+        self.sitemap_list = list(sitemap)
+        self.sitemap_fails = sitemap_fails
         self.fail = set(fail)
         self.raise_on = set(raise_on)
         self.sitemap_raises = sitemap_raises
@@ -70,12 +72,20 @@ class StubCrawl:
                                provider="stub")
         return CrawlResult(url=url, status=CrawlStatus.OK, pages=[page], provider="stub")
 
-    def sitemap_urls(self, url, options=None):
+    def sitemap(self, url, options=None):
+        """Mirrors CrawlService.sitemap: reports failure, never raises for it."""
         self.sitemap_requests.append(url)
         self.options.append(options)
         if self.sitemap_raises:
             raise RuntimeError("sitemap unavailable")
-        return list(self.sitemap)
+        if self.sitemap_fails:
+            return CrawlResult(url=url, status=CrawlStatus.FAILED, error="HTTP 403",
+                               provider="stub")
+        return CrawlResult(url=url, status=CrawlStatus.OK, provider="stub",
+                           pages=[PageContent(url=u, provider="stub") for u in self.sitemap_list])
+
+    def sitemap_urls(self, url, options=None):
+        return [p.url for p in self.sitemap(url, options).pages]
 
     def select_provider(self, options=None):
         class _P:
@@ -932,5 +942,49 @@ def test_a_partial_enumeration_failure_still_returns_what_it_reached():
     crawl = StubCrawl(pages={f"{BASE}/en-us/case-studies/": _page(f"{CS}/",
                                                                  links=[f"{CS}/a/"])},
                       sitemap_raises=True)
+    got = _source(crawl, index_paths=("/en-us/case-studies/",)).discover(DiscoveryContext())
+    assert [c.source_id for c in got] == ["a"]
+
+
+def test_a_failed_sitemap_fetch_is_not_read_as_an_empty_sitemap():
+    """The crawl service reports failures instead of raising, so a FAILED sitemap
+    arrives as an empty page list. Reading only the list made an unreachable source
+    look like a source with nothing to offer."""
+    from backend.market_discovery.sources.nvidia_inception.connector import EnumerationFailed
+
+    crawl = StubCrawl(sitemap_fails=True)
+    with pytest.raises(EnumerationFailed, match="retrieval problem"):
+        _source(crawl).discover(DiscoveryContext())
+    assert crawl.sitemap_requests                      # it did try
+
+
+def test_an_empty_but_successful_sitemap_is_still_a_successful_run():
+    crawl = StubCrawl(sitemap=[])
+    assert _source(crawl).discover(DiscoveryContext()) == []
+
+
+def test_a_reported_retrieval_failure_reaches_the_source_outcome():
+    """End to end: a FAILED CrawlResult must surface in Run History as a failed
+    source with the reason, not as a healthy run that found nothing."""
+    from backend.market_discovery import run_discovery
+    from backend.market_discovery.registry import SourceRegistry
+    from master_db.local import make_session_factory
+
+    registry = SourceRegistry()
+    registry.register(NvidiaInceptionSource(config=_config(), crawl_service=StubCrawl(sitemap_fails=True)))
+    settings = Settings(_env_file=None, discovery_sources_raw="nvidia_inception",
+                        discovery_retry_count=1, discovery_concurrency=1)
+    with make_session_factory(":memory:")() as session:
+        result = run_discovery(session, settings, registry=registry, persist=False)
+
+    assert result.status == "failed"
+    assert result.configured == 1 and result.fetched == 0
+    assert "retrieval problem" in result.sources[0].error
+
+
+def test_one_failed_surface_does_not_hide_another_that_worked():
+    """Sitemap reports FAILED, an index page answers: degraded, not failed."""
+    crawl = StubCrawl(pages={f"{BASE}/en-us/case-studies/": _page(f"{CS}/", links=[f"{CS}/a/"])},
+                      sitemap_fails=True)
     got = _source(crawl, index_paths=("/en-us/case-studies/",)).discover(DiscoveryContext())
     assert [c.source_id for c in got] == ["a"]
