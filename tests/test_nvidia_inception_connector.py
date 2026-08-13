@@ -47,10 +47,12 @@ class StubCrawl:
     """Stands in for CrawlService. Records every URL the connector requests."""
 
     def __init__(self, pages=None, *, sitemap=(), fail=(), raise_on=(), sitemap_raises=False,
-                 sitemap_fails=False):
+                 sitemap_fails=False, children=None, child_fails=()):
         self.pages = pages or {}
         self.sitemap_list = list(sitemap)
         self.sitemap_fails = sitemap_fails
+        self.children = dict(children or {})
+        self.child_fails = set(child_fails)
         self.fail = set(fail)
         self.raise_on = set(raise_on)
         self.sitemap_raises = sitemap_raises
@@ -73,16 +75,24 @@ class StubCrawl:
         return CrawlResult(url=url, status=CrawlStatus.OK, pages=[page], provider="stub")
 
     def sitemap(self, url, options=None):
-        """Mirrors CrawlService.sitemap: reports failure, never raises for it."""
+        """Mirrors CrawlService.sitemap: reports failure, never raises for it.
+
+        `children` maps a child-sitemap URL to the entries it returns, which is how
+        an INDEX is modelled — the shape production actually served.
+        """
         self.sitemap_requests.append(url)
         self.options.append(options)
         if self.sitemap_raises:
             raise RuntimeError("sitemap unavailable")
-        if self.sitemap_fails:
+        if url in self.child_fails:
+            return CrawlResult(url=url, status=CrawlStatus.FAILED, error="HTTP 503",
+                               provider="stub")
+        if self.sitemap_fails and url not in self.children:
             return CrawlResult(url=url, status=CrawlStatus.FAILED, error="HTTP 403",
                                provider="stub")
+        entries = self.children.get(url, self.sitemap_list)
         return CrawlResult(url=url, status=CrawlStatus.OK, provider="stub",
-                           pages=[PageContent(url=u, provider="stub") for u in self.sitemap_list])
+                           pages=[PageContent(url=u, provider="stub") for u in entries])
 
     def sitemap_urls(self, url, options=None):
         return [p.url for p in self.sitemap(url, options).pages]
@@ -988,3 +998,124 @@ def test_one_failed_surface_does_not_hide_another_that_worked():
                       sitemap_fails=True)
     got = _source(crawl, index_paths=("/en-us/case-studies/",)).discover(DiscoveryContext())
     assert [c.source_id for c in got] == ["a"]
+
+
+# ============================================ sitemap INDEX handling (prod #3)
+# Production logged, from the deployed build:
+#     sitemap yielded 0 case study url(s) from 1 entries
+#     completed ... pages_crawled=3 companies=0 skipped_known=0 failed_pages=0
+# while this locale sitemap serves 4,000+ URLs from a developer machine. A sitemap
+# that answers with a handful of entries and no case studies is the shape of an
+# INDEX whose children the shared provider did not recognise as sitemaps.
+SITEMAP = f"{BASE}/en-us/en-us.sitemap.xml"
+CHILD = f"{BASE}/en-us/en-us-1.sitemap.xml"
+
+
+def test_the_production_shape_one_entry_no_case_studies_is_followed():
+    """The exact reported failure: one entry, zero case studies, now enumerated."""
+    crawl = StubCrawl(sitemap=[CHILD],
+                      children={CHILD: [f"{CS}/a/", f"{CS}/b/", f"{BASE}/en-us/geforce/"]})
+    got = _source(crawl).discover(DiscoveryContext())
+    assert [c.source_id for c in got] == ["a", "b"]
+    assert crawl.sitemap_requests == [SITEMAP, CHILD]
+
+
+def test_a_child_sitemap_carrying_a_query_string_is_recognised():
+    """The provider's own `endswith('.xml')` check misses these — the reason an index
+    arrives looking like a page list."""
+    child = f"{BASE}/en-us/sitemap.xml?p=2"
+    crawl = StubCrawl(sitemap=[child], children={child: [f"{CS}/a/"]})
+    assert [c.source_id for c in _source(crawl).discover(DiscoveryContext())] == ["a"]
+
+
+def test_a_child_sitemap_without_an_extension_is_recognised():
+    child = f"{BASE}/en-us/sitemap/case-studies"
+    crawl = StubCrawl(sitemap=[child], children={child: [f"{CS}/a/"]})
+    assert [c.source_id for c in _source(crawl).discover(DiscoveryContext())] == ["a"]
+
+
+def test_children_are_not_followed_when_the_parent_already_has_case_studies():
+    """No extra requests on the healthy path — this stays a one-request enumeration."""
+    crawl = StubCrawl(sitemap=[f"{CS}/a/", CHILD])
+    got = _source(crawl).discover(DiscoveryContext())
+    assert [c.source_id for c in got] == ["a"]
+    assert crawl.sitemap_requests == [SITEMAP]
+
+
+def test_a_self_referential_index_does_not_recurse():
+    crawl = StubCrawl(sitemap=[SITEMAP])
+    assert _source(crawl).discover(DiscoveryContext()) == []
+    assert crawl.sitemap_requests == [SITEMAP]          # itself, never again
+
+
+def test_child_sitemaps_are_not_followed_recursively():
+    """Two levels is the whole convention; a grandchild index is not walked."""
+    grandchild = f"{BASE}/en-us/deep.sitemap.xml"
+    crawl = StubCrawl(sitemap=[CHILD],
+                      children={CHILD: [grandchild], grandchild: [f"{CS}/a/"]})
+    assert _source(crawl).discover(DiscoveryContext()) == []
+    assert crawl.sitemap_requests == [SITEMAP, CHILD]
+
+
+def test_a_failing_child_leaves_the_run_degraded_not_failed():
+    """The parent answered, so this is not a retrieval failure."""
+    good = f"{BASE}/en-us/good.sitemap.xml"
+    crawl = StubCrawl(sitemap=[CHILD, good], child_fails={CHILD},
+                      children={CHILD: [], good: [f"{CS}/a/"]})
+    assert [c.source_id for c in _source(crawl).discover(DiscoveryContext())] == ["a"]
+
+
+def test_a_robots_disallowed_child_is_skipped():
+    blocked = f"{BASE}/admin/secret.sitemap.xml"        # robots.txt: Disallow /admin
+    crawl = StubCrawl(sitemap=[blocked, CHILD],
+                      children={blocked: [f"{CS}/x/"], CHILD: [f"{CS}/a/"]})
+    got = _source(crawl).discover(DiscoveryContext())
+    assert [c.source_id for c in got] == ["a"]
+    assert blocked not in crawl.sitemap_requests
+
+
+def test_child_sitemap_fan_out_is_bounded():
+    from backend.market_discovery.sources.nvidia_inception.connector import _MAX_CHILD_SITEMAPS
+
+    kids = [f"{BASE}/en-us/s{i}.sitemap.xml" for i in range(_MAX_CHILD_SITEMAPS + 15)]
+    crawl = StubCrawl(sitemap=kids, children={k: [] for k in kids})
+    _source(crawl).discover(DiscoveryContext())
+    assert len(crawl.sitemap_requests) == _MAX_CHILD_SITEMAPS + 1     # parent + bound
+
+
+def test_an_index_whose_children_hold_nothing_is_still_a_successful_empty_run():
+    crawl = StubCrawl(sitemap=[CHILD], children={CHILD: [f"{BASE}/en-us/geforce/"]})
+    assert _source(crawl).discover(DiscoveryContext()) == []
+
+
+def test_child_case_studies_are_de_duplicated_across_children():
+    a = f"{BASE}/en-us/a.sitemap.xml"
+    b = f"{BASE}/en-us/b.sitemap.xml"
+    crawl = StubCrawl(sitemap=[a, b],
+                      children={a: [f"{CS}/dup/"], b: [f"{CS}/dup/", f"{CS}/other/"]})
+    got = _source(crawl).discover(DiscoveryContext())
+    assert [c.source_id for c in got] == ["dup", "other"]
+
+
+def test_incremental_mode_still_skips_known_children_results():
+    crawl = StubCrawl(sitemap=[CHILD], children={CHILD: [f"{CS}/a/", f"{CS}/b/"]})
+    got = _source(crawl, incremental=True).discover(DiscoveryContext(
+        known_source_ids={"nvidia_inception": frozenset({"a"})}))
+    assert [c.source_id for c in got] == ["b"]
+
+
+def test_an_unproductive_sitemap_logs_what_it_actually_returned(caplog):
+    """So the next production run distinguishes an unfollowed index from a truncated
+    or substituted response without needing another deploy."""
+    crawl = StubCrawl(sitemap=[f"{BASE}/en-us/ai-trust-center/"])
+    with caplog.at_level(logging.WARNING, logger="market_discovery.nvidia_inception"):
+        assert _source(crawl).discover(DiscoveryContext()) == []
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "no case studies" in text and "ai-trust-center" in text
+
+
+def test_a_productive_sitemap_logs_no_such_warning(caplog):
+    crawl = StubCrawl(sitemap=[f"{CS}/a/"])
+    with caplog.at_level(logging.WARNING, logger="market_discovery.nvidia_inception"):
+        _source(crawl).discover(DiscoveryContext())
+    assert "no case studies" not in "\n".join(r.getMessage() for r in caplog.records)
