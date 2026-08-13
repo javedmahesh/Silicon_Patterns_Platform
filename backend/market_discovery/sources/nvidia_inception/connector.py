@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
 from backend.crawling.schemas import CrawlOptions, CrawlResult
 from backend.market_discovery.crawling import CrawlingDiscoverySource
@@ -45,6 +46,24 @@ logger = logging.getLogger("market_discovery.nvidia_inception")
 #: few thousand entries, of which ~200 are case studies; this only guards against a
 #: pathologically large index, never against normal operation.
 _SITEMAP_URL_CEILING = 20_000
+
+#: Child sitemaps followed from an index in one run. Generous enough for a real
+#: split sitemap, small enough that a pathological index cannot fan out.
+_MAX_CHILD_SITEMAPS = 25
+
+
+def _looks_like_sitemap(url: str) -> bool:
+    """Is this entry a child SITEMAP rather than a page?
+
+    Matched on the path, not the whole URL, so a child carrying a query string
+    (``/sitemap.xml?p=2``) is still recognised — the shared provider's
+    ``endswith('.xml')`` check on the full URL is what misses those.
+    """
+    try:
+        path = (urlparse(url).path or "").lower()
+    except ValueError:
+        return False
+    return path.endswith((".xml", ".xml.gz")) or "sitemap" in path
 
 
 class EnumerationFailed(RuntimeError):
@@ -196,9 +215,66 @@ class NvidiaInceptionSource(CrawlingDiscoverySource):
         found = [p.url for p in result.pages]
         urls = [u for u in parser.filter_case_study_urls(found, base_url=self.config.base_url)
                 if robots_allows(u)]
-        logger.info("[nvidia_inception] sitemap yielded %d case study url(s) from %d entries",
-                    len(urls), len(found))
-        return urls, 1, True
+        crawled = 1
+
+        # A sitemap that yielded no case studies may not have been a page list at all:
+        # sitemaps.org allows an INDEX whose entries are themselves sitemaps. The shared
+        # HTTP provider follows children only when the URL ends in ".xml", so an index
+        # whose children carry a query string or no extension arrives here as a handful
+        # of ordinary-looking URLs — which is exactly the "0 case study url(s) from 1
+        # entries" production reports while this locale sitemap serves 4,000+ URLs here.
+        if not urls:
+            children = [u for u in found if _looks_like_sitemap(u) and u != url]
+            if children:
+                child_urls, child_crawled = self._from_child_sitemaps(children)
+                urls.extend(child_urls)
+                crawled += child_crawled
+
+        logger.info("[nvidia_inception] sitemap yielded %d case study url(s) from %d entries "
+                    "(%d request(s))", len(urls), len(found), crawled)
+        if not urls and found:
+            # A sitemap that answers with entries but no case studies is either an
+            # index we could not follow or a truncated/substituted response. The first
+            # few URLs say which, and they are public sitemap entries — nothing secret.
+            logger.warning("[nvidia_inception] sitemap produced no case studies; first "
+                           "entries were %s", found[:3])
+        return urls, crawled, True
+
+    def _from_child_sitemaps(self, children: list[str]) -> tuple[list[str], int]:
+        """Follow child sitemaps one level. Returns ``(case_study_urls, requests)``.
+
+        Bounded and non-recursive: a child that is itself an index is not followed
+        again, because two levels is the whole of the sitemaps.org convention and an
+        unbounded walk of a stranger's sitemap tree is not something to launch from a
+        scheduled job. A child that fails is skipped — the parent still answered, so
+        this stays a degraded run rather than a retrieval failure.
+        """
+        out: list[str] = []
+        crawled = 0
+        for child in children[:_MAX_CHILD_SITEMAPS]:
+            if not robots_allows(child):
+                logger.warning("[nvidia_inception] child sitemap %s is disallowed by robots.txt",
+                               child)
+                continue
+            try:
+                result = self.crawl.sitemap(child, self._sitemap_options())
+            except Exception:      # noqa: BLE001 - one bad child is not fatal
+                logger.warning("[nvidia_inception] child sitemap %s raised", child, exc_info=True)
+                crawled += 1
+                continue
+            crawled += 1
+            if not result.ok:
+                logger.warning("[nvidia_inception] child sitemap %s unavailable: %s",
+                               child, result.error or result.status.value)
+                continue
+            entries = [p.url for p in result.pages]
+            hits = [u for u in parser.filter_case_study_urls(entries,
+                                                             base_url=self.config.base_url)
+                    if robots_allows(u) and u not in out]
+            logger.info("[nvidia_inception] child sitemap %s yielded %d case study url(s) "
+                        "from %d entries", child, len(hits), len(entries))
+            out.extend(hits)
+        return out, crawled
 
     def _from_indexes(self, context: DiscoveryContext,
                       *, exclude: set[str]) -> tuple[list[str], int, bool]:
