@@ -472,3 +472,141 @@ def test_run_now_busy_when_execution_running(client, monkeypatch):
     r = client.post("/scheduler/run-now", headers=MGR)
     assert r.status_code == 409
     assert called["n"] == 0
+
+
+# ------------------------------------------------- stale-run reaping (abandoned runs)
+# A run killed mid-flight (redeploy, SIGKILL, OOM) never reaches the finish block, so
+# both its execution row and the stage it died inside stay 'running' forever. Reaping
+# only at startup could not fix that: at the boot that follows the crash the row is
+# seconds old, far younger than STALE_RUN_AFTER, so the boot pass always skipped it.
+OLD = timedelta(hours=7)          # older than STALE_RUN_AFTER (6h)
+RECENT = timedelta(minutes=5)     # a genuinely live run
+
+
+def _execution(s, run_id, *, age, status="running"):
+    s.add(PipelineExecution(run_id=run_id, trigger="manual", status=status,
+                            started_at=datetime.now(timezone.utc) - age))
+    s.commit()
+    return s.query(PipelineExecution).filter_by(run_id=run_id).one()
+
+
+def _stage(s, component, *, age, status="running", pipeline_id="run-x"):
+    row = PipelineRun(pipeline_id=pipeline_id, component=component, status=status,
+                      started_at=datetime.now(timezone.utc) - age)
+    s.add(row)
+    s.commit()
+    return row
+
+
+def test_a_stale_execution_is_marked_failed(session):
+    _execution(session, "run-dead", age=OLD)
+    assert standard_run.reap_stale_runs(session) == 1
+    row = session.query(PipelineExecution).filter_by(run_id="run-dead").one()
+    assert row.status == "failed"
+    assert row.finished_at is not None
+    assert row.notification_status == "skipped"
+    assert "did not finish" in row.notification_detail
+
+
+def test_a_fresh_execution_is_left_alone(session):
+    _execution(session, "run-live", age=RECENT)
+    assert standard_run.reap_stale_runs(session) == 0
+    assert session.query(PipelineExecution).filter_by(run_id="run-live").one().status == "running"
+
+
+def test_a_stale_stage_row_is_marked_failed(session):
+    _stage(session, "leadership", age=OLD)
+    assert standard_run.reap_stale_runs(session) == 1
+    row = session.query(PipelineRun).filter_by(component="leadership").one()
+    assert row.status == "failed"
+    assert row.finished_at is not None
+    assert row.error_count >= 1
+    assert "did not finish" in row.notes
+
+
+def test_a_fresh_stage_row_is_left_alone(session):
+    _stage(session, "scoring", age=RECENT)
+    assert standard_run.reap_stale_runs(session) == 0
+    assert session.query(PipelineRun).filter_by(component="scoring").one().status == "running"
+
+
+@pytest.mark.parametrize("status", ["success", "partial", "failed", "skipped"])
+def test_a_terminal_stage_row_is_never_touched(session, status):
+    _stage(session, f"done-{status}", age=OLD, status=status)
+    assert standard_run.reap_stale_runs(session) == 0
+    row = session.query(PipelineRun).filter_by(component=f"done-{status}").one()
+    assert row.status == status and row.finished_at is None
+
+
+def test_both_levels_are_reaped_together(session):
+    """The real shape: the run AND the stage it died inside."""
+    _execution(session, "run-dead", age=OLD)
+    _stage(session, "leadership", age=OLD, pipeline_id="run-dead")
+    assert standard_run.reap_stale_runs(session) == 2
+
+
+def test_reaping_is_idempotent(session):
+    _execution(session, "run-dead", age=OLD)
+    _stage(session, "leadership", age=OLD)
+    assert standard_run.reap_stale_runs(session) == 2
+    assert standard_run.reap_stale_runs(session) == 0          # nothing left running
+    assert standard_run.reap_stale_runs(session) == 0
+    row = session.query(PipelineRun).filter_by(component="leadership").one()
+    assert row.notes.count("did not finish") == 1              # reason not appended twice
+
+
+def test_an_existing_stage_note_is_preserved(session):
+    row = _stage(session, "news", age=OLD)
+    row.notes = "collected=40"
+    session.commit()
+    standard_run.reap_stale_runs(session)
+    notes = session.query(PipelineRun).filter_by(component="news").one().notes
+    assert "collected=40" in notes and "did not finish" in notes
+
+
+def test_the_scheduler_tick_reaps(session, monkeypatch):
+    """The fix: reaping happens on every tick, not only at boot."""
+    factory = make_session_factory(":memory:")
+    with factory() as s:
+        _execution(s, "run-dead", age=OLD)
+        _stage(s, "leadership", age=OLD)
+
+    sched = PipelineScheduler(factory, Settings(scheduler_enabled=False,
+                                                schedule_times_raw="09:00"))
+    monkeypatch.setattr(sched, "_fire", lambda *a, **k: None)   # never actually run
+    sched._tick()
+
+    with factory() as s:
+        assert s.query(PipelineExecution).filter_by(run_id="run-dead").one().status == "failed"
+        assert s.query(PipelineRun).filter_by(component="leadership").one().status == "failed"
+
+
+def test_a_failing_reap_never_costs_the_tick(monkeypatch):
+    """Bookkeeping must not stop the scheduler from firing a due slot."""
+    factory = make_session_factory(":memory:")
+    sched = PipelineScheduler(factory, Settings(scheduler_enabled=False))
+    monkeypatch.setattr(standard_run, "reap_stale_runs",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down")))
+    monkeypatch.setattr("backend.scheduler.reap_stale_runs",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down")))
+    sched._tick()          # must not raise
+
+
+def test_startup_still_reaps():
+    """The existing boot-time pass is retained, not replaced."""
+    factory = make_session_factory(":memory:")
+    with factory() as s:
+        _execution(s, "run-dead", age=OLD)
+
+    sched = PipelineScheduler(factory, Settings(scheduler_enabled=True,
+                                                schedule_times_raw="09:00"))
+    try:
+        sched.start()
+        with factory() as s:
+            assert s.query(PipelineExecution).filter_by(run_id="run-dead").one().status == "failed"
+    finally:
+        sched.stop()
+
+
+def test_the_stale_threshold_is_unchanged():
+    assert standard_run.STALE_RUN_AFTER == timedelta(hours=6)

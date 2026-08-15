@@ -106,12 +106,30 @@ class PipelineScheduler:
         # ticks so a normal on-time fire is always caught.
         return max(timedelta(minutes=grace_minutes), timedelta(seconds=_TICK_SECONDS * 3))
 
+    def _reap(self, session) -> None:
+        """Close out abandoned runs. Bookkeeping — never allowed to stop a tick.
+
+        Runs on every tick, not only at startup: the run that most needs reaping is the
+        one the restart just killed, and at startup it is seconds old — far younger than
+        STALE_RUN_AFTER — so the boot pass always skips it. Ticking catches it once it is
+        provably dead, which is what makes the threshold safe to leave at 6 hours.
+        Reaping is idempotent and cheap: with nothing stale it is one indexed read.
+        """
+        try:
+            reaped = reap_stale_runs(session)
+        except Exception:      # noqa: BLE001 - a bad reap must not cost us the slot
+            logger.exception("stale-run reap failed (continuing)")
+            return
+        if reaped:
+            logger.info("marked %d abandoned run row(s) as failed", reaped)
+
     def _tick(self) -> None:
         now_local = datetime.now().astimezone()
         now_utc = datetime.now(timezone.utc)
         # Re-read the (runtime-editable) schedule every tick, so a change made on the
         # Scheduler page takes effect within one tick — no restart needed.
         with self._sessionmaker() as session:
+            self._reap(session)
             cfg = read_config(session, self._settings)
             if not cfg.enabled:
                 return
