@@ -33,6 +33,7 @@ from master_db.models import (
     LeadScore,
     Opportunity,
     PipelineExecution,
+    PipelineRun,
 )
 from orchestrator.orchestrator import Orchestrator, StageResult
 
@@ -148,29 +149,68 @@ def stale_running_cutoff(now: datetime | None = None) -> datetime:
     return (now or datetime.now(timezone.utc)) - STALE_RUN_AFTER
 
 
+#: What a reaped row records, so run history says why it has no result rather than
+#: implying the work failed on its own merits.
+_REAPED_REASON = "run did not finish (process stopped); marked failed by the stale-run reaper"
+
+
+def _stale(rows, cutoff: datetime) -> list:
+    """Rows whose ``started_at`` is provably before ``cutoff``.
+
+    ``started_at`` comes back naive from SQLite and aware from Postgres; both are UTC,
+    so the naive ones are stamped rather than converted.
+    """
+    return [r for r in rows
+            if (r.started_at.replace(tzinfo=timezone.utc)
+                if r.started_at.tzinfo is None else r.started_at) < cutoff]
+
+
 def reap_stale_runs(session: Session, *, now: datetime | None = None) -> int:
     """Close out runs abandoned by a crash/redeploy so they stop reading as in-flight.
 
-    Called once when the scheduler starts (i.e. on every boot). Only touches rows that
-    are provably dead by :data:`STALE_RUN_AFTER`; a live run is never affected, so this
-    is safe to run on a replica while another replica is mid-run.
+    Called when the scheduler starts AND on every tick. Boot alone is not enough: the
+    run that most needs reaping is the one the restart just killed, and at that moment
+    it is seconds old — far younger than :data:`STALE_RUN_AFTER` — so the startup pass
+    always skips it. Ticking picks it up once it is provably dead, without shortening
+    the threshold.
+
+    Both levels are reaped: the run itself (``pipeline_executions``) and the stage it
+    died inside (``pipeline_runs``), which is a separate row written by the
+    orchestrator and was previously left running forever.
+
+    Only rows older than :data:`STALE_RUN_AFTER` are touched, so a live run is never
+    affected and this is safe to call on a replica while another replica is mid-run.
+    Idempotent: a reaped row is no longer ``running``, so a second pass finds nothing.
     """
+    stamp = now or datetime.now(timezone.utc)
     cutoff = stale_running_cutoff(now)
-    rows = list(session.scalars(
-        select(PipelineExecution).where(PipelineExecution.status == "running")
-    ))
-    # started_at comes back naive from SQLite and aware from Postgres; compare in UTC.
-    stale = [r for r in rows if (r.started_at.replace(tzinfo=timezone.utc)
-                                 if r.started_at.tzinfo is None else r.started_at) < cutoff]
-    for r in stale:
+
+    executions = _stale(session.scalars(
+        select(PipelineExecution).where(PipelineExecution.status == "running")), cutoff)
+    for r in executions:
         r.status = "failed"
-        r.finished_at = now or datetime.now(timezone.utc)
+        r.finished_at = stamp
         r.notification_status = "skipped"
-        r.notification_detail = "run did not finish (process stopped); marked failed on restart"
+        r.notification_detail = _REAPED_REASON
         logger.warning("reaped stale Standard Run %s (started %s)", r.run_id, r.started_at)
-    if stale:
+
+    # Stage rows outlive their run: the orchestrator opens one per component and closes
+    # it when the component returns, so the stage in flight when the process died stays
+    # 'running' independently of the execution row above.
+    stages = _stale(session.scalars(
+        select(PipelineRun).where(PipelineRun.status == "running")), cutoff)
+    for r in stages:
+        r.status = "failed"
+        r.finished_at = stamp
+        r.error_count = max(1, r.error_count or 0)
+        if _REAPED_REASON not in (r.notes or ""):
+            r.notes = f"{r.notes} | {_REAPED_REASON}".strip(" |") if r.notes else _REAPED_REASON
+        logger.warning("reaped stale pipeline stage %s/%s (started %s)",
+                       r.pipeline_id or "-", r.component, r.started_at)
+
+    if executions or stages:
         session.commit()
-    return len(stale)
+    return len(executions) + len(stages)
 
 
 def _platform_totals(session: Session) -> dict[str, int]:
