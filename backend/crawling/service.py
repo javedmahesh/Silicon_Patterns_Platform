@@ -124,10 +124,19 @@ class CrawlService:
     def select_provider(self, options: CrawlOptions | None = None) -> base.CrawlProvider:
         """Pick a usable provider for this request.
 
-        Order: the explicitly configured one, then any provider whose capabilities
-        satisfy the request, then the configured fallback. Only providers that pass
-        ``validate()`` are considered, so a missing API key degrades to the next
-        option instead of failing the crawl.
+        Order: the explicitly configured one, then the provider whose capabilities best
+        match the request, then any usable provider, then the configured fallback. Only
+        providers that pass ``validate()`` are considered, so a missing API key degrades
+        to the next option instead of failing the crawl.
+
+        Capability matching runs in BOTH directions. Asking for JavaScript prefers a
+        renderer; asking for no JavaScript prefers a provider that does not render, and
+        that half used to be missing — the request fell through to the first usable
+        provider in name order. With a hosted renderer registered that meant every
+        plain-HTTP request silently went to it, including sitemap enumeration, which a
+        link-mapping API answers with the URL it was given rather than the sitemap's
+        contents. `render_javascript=False` is a caller saying "plain HTTP is enough",
+        and it is now honoured rather than treated as an absence of preference.
         """
         o = options or self.config.default_options
         wanted_js = o.render_javascript
@@ -152,11 +161,24 @@ class CrawlService:
                         self.config.provider)
 
         usable_providers = [p for p in self._available() if usable(p)]
-        if wanted_js:
-            for provider in usable_providers:
-                if provider.capabilities().renders_javascript:
-                    return provider
+
+        def renders(provider: base.CrawlProvider) -> bool | None:
+            """``renders_javascript``, or None when the provider cannot say."""
+            try:
+                return bool(provider.capabilities().renders_javascript)
+            except Exception:      # noqa: BLE001 - a broken provider is not a match
+                logger.error("[crawl] %s.capabilities() raised", provider.name, exc_info=True)
+                return None
+
+        for provider in usable_providers:
+            if renders(provider) is wanted_js:
+                return provider
+        # Nothing matches the preference — a JS request with only plain providers, or a
+        # plain request with only renderers. Serving it is still better than failing;
+        # the caller gets content, and PageContent.provider records who produced it.
         if usable_providers:
+            logger.info("[crawl] no provider matches render_javascript=%s — using %s",
+                        wanted_js, usable_providers[0].name)
             return usable_providers[0]
 
         fallback = self._lookup(self.config.fallback_provider)
@@ -293,8 +315,15 @@ class CrawlService:
 
     def _sitemap_urls(self, provider: base.CrawlProvider, url: str,
                       options: CrawlOptions) -> list[str]:
+        # WHICH provider answered is the first thing to know when two environments
+        # disagree about a sitemap: selection is capability-based, so the same call can
+        # be served by different providers in production and locally, and they do not
+        # enumerate sitemaps the same way.
         try:
-            return provider.fetch_sitemap(url, options)
+            urls = provider.fetch_sitemap(url, options)
+            logger.info("[crawl] sitemap %s enumerated by provider=%s -> %d url(s) "
+                        "(max_pages=%d)", url, provider.name, len(urls), options.max_pages)
+            return urls
         except NotImplementedError:
             # Fall back to the plain-HTTP provider, which always can — the caller
             # asked for a sitemap, not for a specific provider to produce it.
@@ -303,7 +332,10 @@ class CrawlService:
                 raise
             logger.info("[crawl] %s cannot enumerate sitemaps — using %s",
                         provider.name, fallback.name)
-            return fallback.fetch_sitemap(url, options)
+            urls = fallback.fetch_sitemap(url, options)
+            logger.info("[crawl] sitemap %s enumerated by fallback provider=%s -> %d url(s)",
+                        url, fallback.name, len(urls))
+            return urls
 
     def _crawl(self, provider: base.CrawlProvider, url: str,
                options: CrawlOptions) -> list[PageContent]:
