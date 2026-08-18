@@ -753,11 +753,13 @@ def test_selection_falls_back_when_the_configured_provider_is_unusable():
 
 
 def test_javascript_rendering_drives_capability_based_selection():
-    plain = FakeProvider(name="aplain", renders_js=False)
-    js = FakeProvider(name="zjs", renders_js=True)
-    service = _service([plain, js])
-    assert service.select_provider(CrawlOptions(render_javascript=True)).name == "zjs"
-    assert service.select_provider(CrawlOptions(render_javascript=False)).name == "aplain"
+    """Both directions, with the JS provider sorting FIRST by name — so a pass proves
+    capability decided, not alphabetical order."""
+    js = FakeProvider(name="ajs", renders_js=True)
+    plain = FakeProvider(name="zplain", renders_js=False)
+    service = _service([js, plain])
+    assert service.select_provider(CrawlOptions(render_javascript=True)).name == "ajs"
+    assert service.select_provider(CrawlOptions(render_javascript=False)).name == "zplain"
 
 
 def test_server_side_crawl_is_used_when_the_provider_supports_it():
@@ -1052,3 +1054,214 @@ def test_no_production_discovery_source_is_registered():
     sources = (pathlib.Path(__file__).resolve().parent.parent / "backend"
                / "market_discovery" / "sources")
     assert [f.name for f in sources.glob("*.py") if f.name != "__init__.py"] == []
+
+
+# ================================== sitemap diagnostics (prod vs local divergence)
+# Production receives ONE self-referencing entry for the NVIDIA locale sitemap while
+# a developer machine receives ~4,270. These pin the bounded instrumentation that
+# tells those two apart: response shape and provenance, never the body.
+SITEMAP_XML = ('<urlset><url><loc>https://acme.com/a/</loc></url>'
+               '<url><loc>https://acme.com/b/</loc></url></urlset>')
+
+
+def _sitemap_handler(body=SITEMAP_XML, **headers):
+    hdrs = {"Content-Type": "application/xml"}
+    hdrs.update(headers)
+    return lambda r: httpx.Response(200, text=body, headers=hdrs)
+
+
+def test_sitemap_diagnostics_log_response_shape(caplog):
+    # No fake Content-Encoding: httpx would try to decompress a plain body and fail.
+    handler = _sitemap_handler(**{"Cache-Control": "no-store"})
+    with caplog.at_level(logging.INFO, logger="crawling.providers.http"):
+        _http_provider(handler).fetch_sitemap("https://acme.com/s.xml", CrawlOptions())
+    line = next(m for m in (r.getMessage() for r in caplog.records) if "sitemap https://" in m)
+    for field in ("final=", "status=200", "ctype=", "cenc=", "clen=", "bytes=",
+                  "sha256=", "locs=2", "self_referencing=False", "first="):
+        assert field in line, f"{field} missing from: {line}"
+
+
+def test_sitemap_diagnostics_never_log_the_body(caplog):
+    secret = "https://acme.com/very-distinctive-path/"
+    body = f"<urlset><url><loc>{secret}</loc></url>{'<!-- padding -->' * 200}</urlset>"
+    with caplog.at_level(logging.INFO, logger="crawling.providers.http"):
+        _http_provider(_sitemap_handler(body)).fetch_sitemap("https://acme.com/s.xml",
+                                                             CrawlOptions())
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "padding" not in text                      # the body itself never appears
+    assert secret in text                             # a sampled loc is metadata, and useful
+
+
+def test_sitemap_diagnostics_sample_is_bounded(caplog):
+    from backend.crawling.providers.http import _SITEMAP_LOC_SAMPLE
+
+    locs = "".join(f"<url><loc>https://acme.com/{i}/</loc></url>" for i in range(40))
+    with caplog.at_level(logging.INFO, logger="crawling.providers.http"):
+        _http_provider(_sitemap_handler(f"<urlset>{locs}</urlset>")).fetch_sitemap(
+            "https://acme.com/s.xml", CrawlOptions(max_pages=100))
+    line = next(m for m in (r.getMessage() for r in caplog.records) if "sitemap https://" in m)
+    assert "locs=40" in line
+    sample = line.split("first=", 1)[1]
+    assert sample.count("https://acme.com/") == _SITEMAP_LOC_SAMPLE     # 40 seen, 3 shown
+
+
+def test_a_self_referencing_sitemap_is_flagged(caplog):
+    """The exact production shape: one entry, equal to the URL we asked for."""
+    url = "https://acme.com/s.xml"
+    body = f"<urlset><url><loc>{url}</loc></url></urlset>"
+    with caplog.at_level(logging.INFO, logger="crawling.providers.http"):
+        _http_provider(_sitemap_handler(body)).fetch_sitemap(url, CrawlOptions())
+    line = next(m for m in (r.getMessage() for r in caplog.records) if "sitemap https://" in m)
+    assert "self_referencing=True" in line and "locs=1" in line
+
+
+def test_sitemap_diagnostics_never_break_the_crawl(monkeypatch):
+    from backend.crawling.providers import http as http_mod
+
+    monkeypatch.setattr(http_mod, "hashlib", None)     # force the diagnostic to raise
+    urls = _http_provider(_sitemap_handler()).fetch_sitemap("https://acme.com/s.xml",
+                                                            CrawlOptions())
+    assert urls == ["https://acme.com/a/", "https://acme.com/b/"]
+
+
+def test_the_client_configuration_is_logged_once(caplog):
+    provider = HttpCrawlProvider()                     # builds its own client lazily
+    from backend.crawling.providers import http as http_mod
+
+    monkeypatch_flag = http_mod._client_config_logged
+    http_mod._client_config_logged = False
+    try:
+        with caplog.at_level(logging.INFO, logger="crawling.providers.http"):
+            provider.client
+            provider.client                            # second access: no second line
+        lines = [m for m in (r.getMessage() for r in caplog.records) if "http client:" in m]
+        assert len(lines) == 1
+        for field in ("httpx=", "follow_redirects=True", "timeout=", "ua=", "proxy_env="):
+            assert field in lines[0]
+    finally:
+        http_mod._client_config_logged = monkeypatch_flag
+        provider.close()
+
+
+def test_proxy_diagnostics_report_names_never_values(monkeypatch):
+    from backend.crawling.providers.http import _proxy_env
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://user:secret@proxy.internal:8080")
+    names = _proxy_env()
+    assert "HTTPS_PROXY" in names
+    assert not any("secret" in n for n in names)
+
+
+def test_the_enumerating_provider_is_logged(caplog):
+    """Selection is capability-based, so which provider answered is the first thing
+    to know when two environments disagree about the same sitemap."""
+    provider = _http_provider(_sitemap_handler())
+    service = CrawlService(config=CrawlConfig(provider="http"), cache=NullCrawlCache(),
+                           providers={"http": provider})
+    with caplog.at_level(logging.INFO, logger="crawling.service"):
+        service.sitemap_urls("https://acme.com/s.xml", CrawlOptions())
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "enumerated by provider=http" in text and "2 url(s)" in text
+
+
+def test_sitemap_enumeration_results_are_unchanged_by_diagnostics():
+    """Instrumentation only: the returned URLs must be exactly what they were."""
+    urls = _http_provider(_sitemap_handler()).fetch_sitemap("https://acme.com/s.xml",
+                                                            CrawlOptions())
+    assert urls == ["https://acme.com/a/", "https://acme.com/b/"]
+
+
+# ============================== provider selection: honouring render_javascript=False
+# Production had FIRECRAWL_API_KEY set and no CRAWL_PROVIDER. Selection preferred a JS
+# renderer only when JS was ASKED FOR; the other half fell through to the first usable
+# provider in name order, so "firecrawl" beat "http" for every plain request — including
+# sitemap enumeration, which /map answers with the URL it was handed.
+def test_plain_http_is_selected_when_javascript_is_not_requested():
+    """The production bug, pinned: firecrawl sorts before http and must NOT win here."""
+    firecrawl = FakeProvider(name="firecrawl", renders_js=True)
+    http = FakeProvider(name="http", renders_js=False)
+    service = _service([firecrawl, http])
+    assert service.select_provider(CrawlOptions(render_javascript=False)).name == "http"
+
+
+def test_a_javascript_provider_is_selected_when_rendering_is_requested():
+    firecrawl = FakeProvider(name="firecrawl", renders_js=True)
+    http = FakeProvider(name="http", renders_js=False)
+    service = _service([firecrawl, http])
+    assert service.select_provider(CrawlOptions(render_javascript=True)).name == "firecrawl"
+
+
+def test_an_explicit_provider_still_overrides_capability_matching():
+    """CRAWL_PROVIDER remains the operator's escape hatch, in both directions."""
+    firecrawl = FakeProvider(name="firecrawl", renders_js=True)
+    http = FakeProvider(name="http", renders_js=False)
+    service = _service([firecrawl, http], provider="firecrawl")
+    assert service.select_provider(CrawlOptions(render_javascript=False)).name == "firecrawl"
+
+
+def test_a_plain_request_still_runs_when_only_a_renderer_is_available():
+    """Backward compatible: preference, not a requirement — the caller gets content."""
+    firecrawl = FakeProvider(name="firecrawl", renders_js=True)
+    service = _service([firecrawl])
+    assert service.select_provider(CrawlOptions(render_javascript=False)).name == "firecrawl"
+
+
+def test_a_js_request_still_runs_when_only_a_plain_provider_is_available():
+    http = FakeProvider(name="http", renders_js=False)
+    service = _service([http])
+    assert service.select_provider(CrawlOptions(render_javascript=True)).name == "http"
+
+
+def test_an_unusable_preferred_provider_is_skipped_for_the_matching_one():
+    """A missing API key must not drag a plain request onto a broken renderer."""
+    firecrawl = FakeProvider(name="firecrawl", renders_js=True, valid=False)
+    http = FakeProvider(name="http", renders_js=False)
+    service = _service([firecrawl, http])
+    assert service.select_provider(CrawlOptions(render_javascript=True)).name == "http"
+    assert service.select_provider(CrawlOptions(render_javascript=False)).name == "http"
+
+
+def test_a_provider_whose_capabilities_raise_is_not_selected():
+    class Broken(FakeProvider):
+        def capabilities(self):
+            raise RuntimeError("capabilities exploded")
+
+    broken = Broken(name="abroken", renders_js=False)
+    http = FakeProvider(name="http", renders_js=False)
+    assert _service([broken, http]).select_provider(
+        CrawlOptions(render_javascript=False)).name == "http"
+
+
+def test_the_real_providers_select_correctly_with_a_firecrawl_key():
+    """End to end over the REAL registry — the shape production runs in."""
+    from backend.crawling import register_default_providers
+    from backend.crawling.service import CrawlConfig as _CC
+
+    settings = Settings(_env_file=None, firecrawl_api_key="fc-test-key")
+    register_default_providers(settings)
+    service = CrawlService(config=_CC.from_settings(settings), cache=NullCrawlCache())
+    assert service.select_provider(CrawlOptions(render_javascript=False)).name == "http"
+    assert service.select_provider(CrawlOptions(render_javascript=True)).name == "firecrawl"
+
+
+def test_selection_contains_no_source_specific_logic():
+    """The fix is capability-based; no connector may be named in the crawler."""
+    import ast
+    import inspect
+    import textwrap
+
+    from backend.crawling import service as service_mod
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(service_mod.CrawlService.select_provider)))
+    fn = tree.body[0]
+    if isinstance(fn.body[0], ast.Expr) and isinstance(fn.body[0].value, ast.Constant):
+        fn.body = fn.body[1:]                      # drop the docstring; inspect code only
+    code = ast.unparse(fn).lower()
+    for name in ("nvidia", "inception", "wellfound", "case-studies", "sitemap.xml"):
+        assert name not in code, f"selection must not reference {name}"
+
+
+def test_http_sitemap_enumeration_is_unchanged_by_the_selection_fix():
+    urls = _http_provider(_sitemap_handler()).fetch_sitemap("https://acme.com/s.xml",
+                                                            CrawlOptions())
+    assert urls == ["https://acme.com/a/", "https://acme.com/b/"]

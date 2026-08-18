@@ -11,7 +11,9 @@ this provider satisfies the same contract and the same tests, so will the next o
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import re
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -85,6 +87,7 @@ class HttpCrawlProvider(CrawlProvider):
         if self._client is None:
             self._client = httpx.Client(timeout=self.timeout_seconds, follow_redirects=True,
                                         headers={"User-Agent": self.user_agent})
+            _log_client_config(self._client, self.timeout_seconds, self.user_agent)
         return self._client
 
     def close(self) -> None:
@@ -142,6 +145,7 @@ class HttpCrawlProvider(CrawlProvider):
         sitemap_url = url if url.rstrip("/").endswith(".xml") else urljoin(url, "/sitemap.xml")
         response = self._get(sitemap_url, timeout=options.timeout_seconds or self.timeout_seconds)
         locs = _SITEMAP_LOC.findall(response.text or "")
+        _log_sitemap_response(sitemap_url, response, locs)
 
         nested = [loc for loc in locs if loc.rstrip("/").endswith(".xml")]
         pages = [loc for loc in locs if not loc.rstrip("/").endswith(".xml")]
@@ -154,6 +158,73 @@ class HttpCrawlProvider(CrawlProvider):
             except Exception:      # noqa: BLE001 - one bad child sitemap is not fatal
                 logger.debug("[crawl] nested sitemap %s failed", child, exc_info=True)
         return list(absolute_links(pages, sitemap_url))[: max(1, options.max_pages)]
+
+
+#: Diagnostics never carry a response body — only shape and provenance. Enough to
+#: tell "this host served us something different" from "our parser is wrong", and
+#: nothing that could leak page content into a log aggregator.
+_SITEMAP_LOC_SAMPLE = 3
+_client_config_logged = False
+
+
+def _proxy_env() -> list[str]:
+    """Which proxy variables are SET (names only — a proxy URL can carry credentials)."""
+    return sorted(k for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                              "http_proxy", "https_proxy", "all_proxy", "no_proxy")
+                  if os.environ.get(k))
+
+
+def _log_client_config(client: httpx.Client, timeout_seconds: int, user_agent: str) -> None:
+    """Log the effective HTTP client configuration once per process.
+
+    Production and a developer machine can differ in ways that change what a host
+    returns — an egress proxy, a different httpx/h2 build, a different UA. Logging it
+    once at client construction makes those differences visible without a redeploy.
+    """
+    global _client_config_logged
+    if _client_config_logged:
+        return
+    _client_config_logged = True
+    logger.info(
+        "[crawl] http client: httpx=%s follow_redirects=%s timeout=%ss http2=%s "
+        "ua=%r proxy_env=%s",
+        getattr(httpx, "__version__", "?"), client.follow_redirects, timeout_seconds,
+        _http2_enabled(client), user_agent, _proxy_env() or "none",
+    )
+
+
+def _http2_enabled(client: httpx.Client) -> str:
+    """Best-effort read of the HTTP/2 switch; never fails over a private attribute."""
+    try:
+        transport = client._transport            # noqa: SLF001 - diagnostics only
+        return str(getattr(transport, "_pool", None).__class__.__name__)
+    except Exception:      # noqa: BLE001
+        return "?"
+
+
+def _log_sitemap_response(url: str, response: httpx.Response, locs: list[str]) -> None:
+    """One bounded line describing a sitemap response — shape only, never the body.
+
+    Exists because production and local execution disagree about what this URL
+    returns: one sees a single self-referencing entry, the other thousands. The
+    request/response metadata is what separates "a different body was served" from
+    "the same body was parsed differently".
+    """
+    try:
+        body = response.content or b""
+        headers = response.headers
+        first = locs[:_SITEMAP_LOC_SAMPLE]
+        logger.info(
+            "[crawl] sitemap %s -> final=%s status=%s ctype=%r cenc=%r clen=%s "
+            "bytes=%d sha256=%s locs=%d self_referencing=%s first=%s",
+            url, str(response.url), response.status_code,
+            headers.get("Content-Type", ""), headers.get("Content-Encoding", ""),
+            headers.get("Content-Length", "-"), len(body),
+            hashlib.sha256(body).hexdigest()[:12],
+            len(locs), bool(locs) and locs[0].rstrip("/") == url.rstrip("/"), first,
+        )
+    except Exception:      # noqa: BLE001 - diagnostics must never break a crawl
+        logger.debug("[crawl] sitemap diagnostics failed for %s", url, exc_info=True)
 
 
 def _float(value: Any, default: float) -> float:
