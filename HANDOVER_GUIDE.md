@@ -59,7 +59,7 @@ Five data producers feed one master database, which a read-only API serves to a 
 |---|---|
 | `backend/` | FastAPI app: `routers → services → repositories → database`, plus `config` + security (SSO/JWT/RBAC) |
 | `integration/` | `normalizer` (domain canonicalization) · `resolver` (name→domain) · `merge` · `ingestors/` (one per engine) |
-| `master_db/` | SQLAlchemy `models.py` + hand-written SQL `migrations/` (`0001`–`0016`) + `local.py` (SQLite self-heal) |
+| `master_db/` | SQLAlchemy `models.py` + hand-written SQL `migrations/` (`0001`–`0058`) + `local.py` (SQLite self-heal) |
 | `lead_scoring/` | `config` (tunable weights) · `scorer` (pure math) · `service` · `run` |
 | `leadership_signals/` | `seniority` (director+ gate) · `derive` (the rules) |
 | `engagement/` | `recommend` (the sales-pitch rules) |
@@ -68,7 +68,7 @@ Five data producers feed one master database, which a read-only API serves to a 
 | `config/` | engine paths · canonical enums · scoring weights · Supabase creds |
 | `scripts/` | one-off drivers (`seed_master_db.py` — fixtures → a full dev DB, `derive_leadership_signals.py`, `recommend_engagements.py`, `backfill_classification.py`, `validate_postgres.py`, `dump_openapi.py`, …) |
 | `.github/workflows/refresh.yml` | the twice-daily scheduled pipeline |
-| `tests/` | pytest suite (180 tests) |
+| `tests/` | pytest suite (1,900+ test functions) |
 
 **Tech stack:** Python 3.13 · SQLAlchemy 2.0 · FastAPI · Typer + Rich (CLI) · pydantic-settings ·
 React 18 + TypeScript + Vite + Tailwind v4 + TanStack Query/Table + Recharts. The frontend API
@@ -83,7 +83,7 @@ already-qualified leads into outreach — `{{variable}}` email templates (no AI)
 `outreach_repo.py` / `outreach_mail.py`), React pages (`frontend/src/pages/outreach/`), and five master-DB
 tables (`outreach_leads`, `outreach_templates`, `outreach_messages`, `outreach_activities`; migration
 `0020`). It **reuses** companies / decision_makers / lead_scores / engagement_recommendations / users — it
-does not duplicate them — and the platform's Google-SSO + roles (admin/manager approve & manage; members
+does not duplicate them — and the platform's Microsoft sign-in + roles (admin/manager approve & manage; members
 draft). `POST /outreach/leads/sync` qualifies the top `lead_scores` companies. Mail mode is set by
 `OUTREACH_MAIL_MODE` (`mock` default; `gmail` is a drop-in). Run steps: HOW_TO_RUN §3.
 
@@ -141,14 +141,18 @@ all`). The stage registry is `orchestrator/stages.py`; order is fixed in `PIPELI
 ```
 1. industry     → ingest companies           (engine: Industry Discovery)
 2. blog         → ingest opportunities        (engine: Blog Crawler)
-3. annual_list  → ingest ANNUAL_LIST opps     (curated feed, no crawler — no-op when absent)
-4. company_news → ingest people-move opps      (curated feed — EXECUTIVE_HIRE/LEADERSHIP_CHANGE/…; feeds leadership)
-5. career       → ingest jobs/demand/rollups   (engine: Career Scraper)
-6. decision_maker_intelligence → ingest decision_makers  (Apify actor via API — needs APIFY_API_TOKEN)
-7. scoring      → compute lead_scores          (derivation — pure math)
-8. leadership   → derive leadership_signals    (derivation — over decision-maker snapshots + blog/company-news events)
-9. engagement   → recommend engagements        (derivation — over every other signal, so it runs LAST)
+3. news         → ingest news opportunities   (News Collection Engine)
+4. annual_list  → ingest ANNUAL_LIST opps     (curated feed, no crawler — no-op when absent)
+5. company_news → ingest people-move opps      (curated feed — EXECUTIVE_HIRE/LEADERSHIP_CHANGE/…; feeds leadership)
+6. career       → ingest jobs/demand/rollups   (engine: Career Scraper)
+7. market_discovery    → find new market entrants
+8. market_intelligence → interpret discovery results
+9. scoring      → compute lead_scores          (derivation — pure math)
+10. leadership  → derive leadership_signals    (derivation — over decision-maker snapshots + blog/company-news events)
+11. engagement  → recommend engagements        (derivation — over every other signal, so it runs LAST)
 ```
+> `decision_maker_intelligence` (Apify) is **manual-only** — not part of `run all` or the scheduled
+> refresh. Run it per company from the Decision Makers page or with `sp-platform run decision_maker_intelligence`.
 > **company_news → leadership synergy:** director+ moves ingested as `EXECUTIVE_HIRE`/`LEADERSHIP_CHANGE`/
 > `ROLE_CHANGE` opportunities are parsed (from their structured `company_news_signal`) by the
 > `leadership` stage's blog-event feeder into person-level `leadership_signals` — which is why
@@ -164,8 +168,8 @@ all`). The stage registry is `orchestrator/stages.py`; order is fixed in `PIPELI
 - Unresolved records (e.g. a decision maker whose company isn't catalogued) become **stubs** + a
   `resolution_review_queue` entry rather than failing.
 
-**Why the order matters:** derivations 5–7 read what 1–4 produced. Engagement (7) reads *all* signals,
-so it's last. Steps 5–7 are pure functions — they always run, even in CI without the engines vendored.
+**Why the order matters:** derivations 9–11 read what 1–8 produced. Engagement (11) reads *all* signals,
+so it's last. Steps 9–11 are pure functions — they always run, even in CI without the engines vendored.
 
 **Run-engine default (who crawls before ingesting):** a **single-component** run of a
 crawler-backed stage — `run industry` / `run blog` / `run career` — **runs that engine
@@ -415,11 +419,11 @@ Full detail in `docs/DEPLOYMENT.md`; this is the shape. Three pieces, only one o
    `scripts/validate_postgres.py` against prod — it truncates.)*
 2. **API** — deploy the included `Dockerfile` / `render.yaml` (it runs the exact local app,
    `uvicorn backend.main:app`, no engines). Set secrets: `DATABASE_URL`, `ENVIRONMENT=production`,
-   `SP_JWT_SECRET` (≥32 bytes), `SP_BOOTSTRAP_ADMIN_EMAIL` + `SP_BOOTSTRAP_ADMIN_PASSWORD`
-   (initial administrator — first-party email/password, no external identity provider),
+   `SP_JWT_SECRET` (≥32 bytes), `MICROSOFT_TENANT_ID` + `MICROSOFT_CLIENT_ID`,
+   `SP_BOOTSTRAP_ADMIN_EMAIL` (initial administrator, on first Microsoft sign-in),
    `SP_ADMIN_EMAILS`, `CORS_ORIGINS` (**JSON list**), `SP_RATE_LIMIT_PER_MINUTE`. Health check `/health`.
-3. **Frontend** — Vercel, root dir `frontend`, preset Vite. Env: `VITE_API_BASE_URL` (the API origin)
-   — sign-in is first-party email/password, no frontend auth env vars needed.
+3. **Frontend** — Vercel, root dir `frontend`, preset Vite. Env: `VITE_API_BASE_URL` (the API origin),
+   `VITE_MICROSOFT_CLIENT_ID` + `VITE_MICROSOFT_TENANT_ID` (Microsoft sign-in).
 4. **Scheduler** — add the GitHub repo secrets (§4); make the engines available; tweak the cron
    timezone. Trigger once manually to seed.
 5. **Outreach module** — nothing extra to deploy: it ships with the backend + frontend + master DB above
