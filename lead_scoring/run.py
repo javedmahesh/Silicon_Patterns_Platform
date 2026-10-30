@@ -1,4 +1,4 @@
-"""Run lead scoring over the master DB. From the Silicon_Patterns_Platform folder:
+r"""Run lead scoring over the master DB. From the Silicon_Patterns_Platform folder:
 
     python -m lead_scoring.run                 # scores master_local.db
     python -m lead_scoring.run path\to\other.db

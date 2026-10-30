@@ -12,7 +12,7 @@ from backend.config import Settings
 from backend.main import create_app
 from master_db.local import make_session_factory
 from master_db.models import (
-    Base, Company, LeadScore, MlModel, MlRecommendation, Opportunity,
+    Base, Company, LeadScore, MlRecommendation, Opportunity,
 )
 from ml import feedback, model as mdl, promote as promote_mod, registry
 

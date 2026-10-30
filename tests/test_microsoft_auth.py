@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 
 from backend import repositories as repo
 from backend import security
-from backend import services
 from backend.config import Settings
 from backend.main import create_app
 from master_db.models import Base

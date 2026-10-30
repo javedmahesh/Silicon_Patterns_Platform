@@ -103,8 +103,3 @@ def record_training_run(session: Session, *, dataset_version: str, feature_versi
     session.flush()
     return run
 
-
-def list_training_runs(session: Session, limit: int = 50) -> list[MlTrainingRun]:
-    return list(session.scalars(
-        select(MlTrainingRun).order_by(MlTrainingRun.created_at.desc()).limit(limit)
-    ))

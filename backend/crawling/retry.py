@@ -23,10 +23,6 @@ logger = logging.getLogger("crawling.retry")
 
 T = TypeVar("T")
 
-#: HTTP statuses worth another attempt: transient server/proxy faults and throttling.
-RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 522, 524})
-
-
 @dataclass(slots=True)
 class RetryPolicy:
     attempts: int = 3                    # total attempts, not retries (1 = no retry)
@@ -66,10 +62,6 @@ def is_retryable(exc: BaseException) -> bool:
     # Transport-level faults from any HTTP library: no response was produced, so the
     # request may simply not have landed.
     return isinstance(exc, (TimeoutError, ConnectionError, OSError))
-
-
-def status_is_retryable(status_code: int) -> bool:
-    return status_code in RETRYABLE_STATUS
 
 
 @dataclass(slots=True)

@@ -10,7 +10,6 @@ from sqlalchemy import func, select
 from backend.config import Settings
 from backend.main import create_app
 from integration.ingestors.annual_lists import AnnualListIngestor
-from integration.ingestors.industry import IndustryIngestor
 from master_db.local import make_session_factory
 from master_db.models import Base, Company, Opportunity
 

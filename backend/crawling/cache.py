@@ -119,14 +119,6 @@ class InMemoryCrawlCache:
             self._entries.clear()
             return n
 
-    def purge_expired(self) -> int:
-        now = time.monotonic()
-        with self._lock:
-            stale = [k for k, (expires, _r) in self._entries.items() if expires <= now]
-            for k in stale:
-                del self._entries[k]
-            return len(stale)
-
     def stats(self) -> dict[str, int | float]:
         total = self.hits + self.misses
         with self._lock:

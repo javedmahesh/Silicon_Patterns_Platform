@@ -25,7 +25,6 @@ from backend.crawling.providers.http import HttpCrawlProvider
 from backend.crawling.rate_limit import RateLimitConfig, RateLimiter, TokenBucket, host_of
 from backend.crawling.retry import RetryOutcome, RetryPolicy, is_retryable, with_retries
 from backend.crawling.schemas import (
-    CrawlMode,
     CrawlOptions,
     CrawlResult,
     CrawlStatus,

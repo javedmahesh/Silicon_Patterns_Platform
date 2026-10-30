@@ -7,7 +7,6 @@ commentary rejection, multi-signal preservation, dedup (A/B/C/D), canonical comp
 resolution, provenance survival, role-family relevance, and the Opportunities API
 (filter/sort/geography/priority) — no Apify, no external services.
 """
-from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient

@@ -14,7 +14,6 @@ import pytest
 from backend.config import Settings
 from master_db import migrate
 from master_db.migrate import (
-    MIGRATIONS_DIR,
     apply_pending,
     is_postgres,
     migration_files,

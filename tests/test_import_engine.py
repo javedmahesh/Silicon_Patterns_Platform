@@ -3,7 +3,7 @@ import openpyxl
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import import_engine, import_repo
+from backend import import_engine
 from backend.config import Settings
 from backend.import_engine import run_import
 from backend.main import create_app

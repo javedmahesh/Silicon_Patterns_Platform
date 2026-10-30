@@ -13,8 +13,6 @@ from master_db.models import (
     Campaign,
     CampaignMember,
     Company,
-    CrmDeal,
-    CrmPipelineStage,
     CsAccount,
     ForecastSnapshot,
     LeadAssignment,

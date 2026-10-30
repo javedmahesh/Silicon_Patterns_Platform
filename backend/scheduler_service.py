@@ -13,7 +13,7 @@ import threading
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from backend import notifications, repositories as repo
+from backend import notifications, repositories as repo  # noqa: F401 - importing notifications registers its providers
 from backend.config import Settings
 from backend.dependencies import Pagination
 from backend.scheduler_config import read_config, write_config

@@ -117,6 +117,3 @@ def rollback(session: Session, settings, *, to_version: str, actor_email: str = 
     session.commit()
     return PromotionResult(True, to_version, "rolled_back", previous_version=prev)
 
-
-def current_production(session: Session, settings) -> MlModel | None:
-    return registry.active_model(session, settings.ml_model_name)

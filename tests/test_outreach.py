@@ -745,7 +745,6 @@ def test_message_preview(client):
 
 def test_preview_sanitizes_xss(client):
     """HTML with script tags must be stripped in preview."""
-    import base64
     client.post("/outreach/leads/sync", headers=MGR)
     lid = _first_lead_id(client)
     mid = _draft(client, lid)["id"]

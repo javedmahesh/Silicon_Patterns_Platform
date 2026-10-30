@@ -211,9 +211,6 @@ class CrawlService:
         key = cache_key(url, mode.value, provider.name, options or self.config.default_options)
         return bool(self.cache.invalidate(key))
 
-    def clear_cache(self) -> int:
-        return self.cache.clear()
-
     def health(self) -> dict:
         providers = ({n: p.health() for n, p in self._providers.items()}
                      if self._providers is not None else base.provider_health())

@@ -14,7 +14,6 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from config.sources import BLOG_DIR, CAREER_DIR, INDUSTRY_DIR, find_source
-from config.supabase import load_supabase_credentials
 from integration.ingestors.annual_lists import AnnualListIngestor
 from integration.ingestors.base import IngestionResult
 from integration.ingestors.blog import BlogIngestor

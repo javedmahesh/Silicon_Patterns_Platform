@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from backend.config import Settings
 from backend.main import create_app
-from master_db.models import Base, Company, CsContract, ForecastSnapshot, SlaPolicy, SlaTracker
+from master_db.models import Base, Company, CsContract, ForecastSnapshot
 
 MGR = {"X-Dev-Role": "manager"}
 MEM = {"X-Dev-Role": "member"}

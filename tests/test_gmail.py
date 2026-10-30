@@ -10,7 +10,6 @@ from __future__ import annotations
 import base64
 import json
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
 from unittest.mock import MagicMock, patch
 
 import pytest

@@ -10,8 +10,8 @@ from backend.config import Settings
 from backend.main import create_app
 from master_db.local import make_session_factory
 from master_db.models import (
-    Base, Company, DecisionMaker, DemandSignal, LeadScore, MlFeatureRow, MlTrainingRun,
-    Opportunity, RoleEmbedding, UserInteraction,
+    Base, Company, DecisionMaker, DemandSignal, LeadScore, MlTrainingRun,
+    Opportunity, RoleEmbedding,
 )
 from ml import decay, dataset, features as feat, feedback, registry
 from ml import embeddings as emb

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from backend.config import Settings
 from backend.main import create_app
 from backend.workflow_service import evaluate_conditions
-from master_db.models import Base, Company, CsAccount, CsContract
+from master_db.models import Base, Company, CsContract
 
 MGR = {"X-Dev-Role": "manager"}
 MEM = {"X-Dev-Role": "member"}

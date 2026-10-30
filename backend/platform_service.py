@@ -75,15 +75,6 @@ def production_readiness(settings: Settings | None = None, session: Session | No
     }
 
 
-def is_feature_enabled(session: Session, key: str, *, default: bool = False) -> bool:
-    """Feature-flag read helper for other modules — writes go through the existing
-    PUT /governance/settings (category='platform')."""
-    value = admin_service.get_setting_cached(session, "platform", key)
-    if value is None:
-        return default
-    return bool(value.get("enabled", default))
-
-
 # ================================================================== 6. operational health
 def operational_health(session: Session, user, settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
