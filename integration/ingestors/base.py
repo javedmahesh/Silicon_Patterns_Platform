@@ -299,24 +299,6 @@ class BaseIngestor:
         provenance.record(self.session, model.__tablename__, pk_value, op)
         return obj
 
-    def upsert_by(self, model: type, column, value: Any, values: dict[str, Any]) -> tuple[Any, bool]:
-        """Insert or update *model* by a unique non-PK column (e.g. linkedin_url).
-
-        Returns ``(obj, existed)`` where ``existed`` is True when a row was already
-        present (i.e. this was a duplicate/update, not a fresh insert).
-        """
-        obj = self.session.scalar(select(model).where(column == value))
-        existed = obj is not None
-        if obj is None:
-            obj = model(**values)
-            self.session.add(obj)
-        else:
-            for key, val in values.items():
-                setattr(obj, key, val)
-        self.session.flush()
-        provenance.record(self.session, model.__tablename__, value, "updated" if existed else "created")
-        return obj, existed
-
     # --- value coercion (CSV gives strings; JSON gives native types) ---
 
     @staticmethod

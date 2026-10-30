@@ -16,7 +16,6 @@ ends the batch as a failure, but never spawns a second run for it — see
 """
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass

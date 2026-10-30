@@ -230,9 +230,6 @@ class MarketIntelligence:
     def signal_types(self) -> tuple[str, ...]:
         return tuple(s.type for s in self.signals)
 
-    def signals_in(self, category: SignalCategory) -> tuple[Signal, ...]:
-        return tuple(s for s in self.signals if s.category is category)
-
     @property
     def is_core_semiconductor(self) -> bool:
         return any(c.core for c in self.classifications)

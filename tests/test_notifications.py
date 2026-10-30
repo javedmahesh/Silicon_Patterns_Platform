@@ -30,7 +30,6 @@ from master_db.models import (
     Job,
     LeadScore,
     NewsSource,
-    NotificationDelivery,
     PipelineExecution,
     User,
 )

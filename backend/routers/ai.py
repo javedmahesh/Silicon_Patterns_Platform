@@ -11,12 +11,10 @@ from backend.schemas import (
     AiBriefingOut,
     AiCopilotSummaryOut,
     AiDashboardOut,
-    AiEngagementScoreOut,
     AiGenerationResultOut,
     AiInsightOut,
     AiInsightPatch,
     AiRecommendationOut,
-    AiRiskScoreOut,
     Page,
 )
 from backend.security import get_current_user

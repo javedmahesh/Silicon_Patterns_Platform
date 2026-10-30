@@ -1,6 +1,4 @@
 """Tests for the P3 Lead Scoring service."""
-import pytest
-from sqlalchemy import select
 
 from lead_scoring.config import ScoringConfig
 from lead_scoring.scorer import CompanyInputs, score_company

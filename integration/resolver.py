@@ -31,7 +31,6 @@ from sqlalchemy.orm import Session
 
 from integration.normalizer import (
     canonical_company_id,
-    is_valid_domain,
     name_key as make_name_key,
     normalize_domain,
 )
@@ -367,7 +366,3 @@ class CompanyResolver:
         self.session.flush()
         return item
 
-
-def is_resolvable_domain(value: str | None) -> bool:
-    """Convenience guard: does *value* normalize to a valid join key?"""
-    return is_valid_domain(normalize_domain(value))

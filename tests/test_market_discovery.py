@@ -9,7 +9,7 @@ No network, no external service, no real connector — the framework ships with 
 sources and every test here uses in-test fakes, which is exactly how a future
 Firecrawl/Wellfound/Dealroom connector will be tested too.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -24,7 +24,6 @@ from backend.market_discovery.confidence import (
     has_semiconductor_signal,
 )
 from backend.market_discovery.normalize import (
-    candidate_key,
     comparison_name,
     normalize_candidate,
     normalize_linkedin,
@@ -35,7 +34,6 @@ from backend.market_discovery.pipeline import DiscoveryPipeline, PipelineConfig
 from backend.market_discovery.registry import SourceRegistry
 from backend.market_discovery.resolver import DiscoveryResolver, DuplicateStrategy
 from backend.market_discovery.schemas import (
-    CandidateStatus,
     DiscoveryCandidate,
     DiscoveryContext,
     SourceCapabilities,

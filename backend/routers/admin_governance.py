@@ -16,7 +16,6 @@ from backend.schemas import (
     ApiKeyCreate,
     ApiKeyCreatedOut,
     ApiKeyOut,
-    AuditEventOut,
     ComplianceRecordCreate,
     ComplianceRecordOut,
     ComplianceRecordPatch,

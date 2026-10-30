@@ -19,7 +19,7 @@ from backend.market_discovery.schemas import DiscoveryCandidate
 from backend.market_intelligence import events, models, scoring, service
 from backend.market_intelligence.classifiers import classify, core_classifications
 from backend.market_intelligence.config import IntelligenceConfig, apply_overlay, build_pack
-from backend.market_intelligence.explainability import build_explanation, evidence_terms
+from backend.market_intelligence.explainability import evidence_terms
 from backend.market_intelligence.pipeline import (
     IntelligencePipeline,
     clear_enrichers,
@@ -31,7 +31,6 @@ from backend.market_intelligence.rules import (
     DEFAULT_THRESHOLDS,
     DEFAULT_WEIGHTS,
     Rule,
-    RulePack,
     build_context,
     evaluate_rule,
     match_terms,
@@ -51,7 +50,7 @@ from backend.market_intelligence.signals import (
     detect_strategic,
 )
 from backend.market_intelligence.technology import categories, detect_technologies, overlap_score
-from backend.market_intelligence.vocabulary import CORE_CLASSIFICATIONS, default_pack
+from backend.market_intelligence.vocabulary import default_pack
 from master_db.local import make_session_factory
 from master_db.models import DiscoveryCandidateRecord, MarketIntelligenceRecord
 

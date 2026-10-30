@@ -25,7 +25,7 @@ from config.enums import USER_ROLES
 from master_db.models import PipelineRun, User
 from orchestrator.health import health_report
 from orchestrator.orchestrator import Orchestrator, StageResult
-from orchestrator.stages import PIPELINE_ORDER, STAGES
+from orchestrator.stages import STAGES
 
 app = typer.Typer(name="sp-platform", help="Silicon Patterns platform orchestrator", add_completion=False)
 console = Console()

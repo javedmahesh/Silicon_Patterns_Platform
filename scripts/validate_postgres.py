@@ -54,7 +54,7 @@ from sqlalchemy.orm import sessionmaker
 from integration.normalizer import canonical_company_id, name_key
 from integration.resolver import CompanyResolver
 from master_db.bulk import bulk_upsert
-from master_db.models import Company, DecisionMaker, DemandSignal, LeadScore, PipelineRun
+from master_db.models import Company, DecisionMaker, LeadScore, PipelineRun
 
 MIGRATIONS = ROOT / "master_db" / "migrations"
 VALIDATION_SCHEMA = "sp_validation"  # dedicated + disposable; only this script ever drops it

@@ -1,5 +1,4 @@
 """Test manual company enrichment + its effect on lead scoring."""
-from sqlalchemy import select
 
 from integration.enrichment import apply_enrichment
 from lead_scoring.service import score_all

@@ -127,10 +127,3 @@ class ScoringConfig:
     def grade_threshold(self, grade: str | None) -> float:
         """The minimum score for a grade (C → 0.0)."""
         return float(self.grade_bands.get(grade or "", 0.0))
-
-    def best_grade(self, a: str | None, b: str | None) -> str:
-        """The higher (better) of two grades by their score thresholds; '' ignored."""
-        order = ("C", "B", "A", "A+")
-        ra = order.index(a) if a in order else -1
-        rb = order.index(b) if b in order else -1
-        return a if ra >= rb else b

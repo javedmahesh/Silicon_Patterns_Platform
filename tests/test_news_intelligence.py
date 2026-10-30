@@ -27,7 +27,6 @@ from master_db.models import (
     NewsSource,
     Opportunity,
     OpportunityArticle,
-    OpportunityReview,
 )
 import orchestrator.stages as stages
 

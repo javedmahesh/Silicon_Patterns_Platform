@@ -166,10 +166,6 @@ class DiscoveryResolver:
                          candidate.company_name, exc_info=True)
             return None, f"resolution error: {exc}"
 
-    def is_known_company(self, candidate: DiscoveryCandidate) -> bool:
-        domain, _ = self.resolve_to_company(candidate)
-        return domain is not None
-
     # ------------------------------------------------------------ merge prep
     @staticmethod
     def merge_plan(group: MergeGroup) -> dict[str, object]:

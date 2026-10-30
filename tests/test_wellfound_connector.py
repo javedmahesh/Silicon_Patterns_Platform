@@ -546,7 +546,6 @@ def test_skipped_known_companies_are_counted_in_the_log(caplog):
 
 # ====================================================== architectural boundary
 def test_the_connector_has_no_database_access():
-    import ast
     import pathlib
 
     pkg = (pathlib.Path(__file__).resolve().parent.parent / "backend" / "market_discovery"

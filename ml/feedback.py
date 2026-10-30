@@ -48,14 +48,6 @@ def record_interaction(session: Session, *, interaction_type: str, entity_type: 
     return row
 
 
-def interactions_for(session: Session, entity_type: str, entity_id: str) -> list[UserInteraction]:
-    return list(session.scalars(
-        select(UserInteraction)
-        .where(UserInteraction.entity_type == entity_type, UserInteraction.entity_id == str(entity_id))
-        .order_by(UserInteraction.created_at.desc())
-    ))
-
-
 def interactions_since(session: Session, since: datetime) -> list[UserInteraction]:
     if since.tzinfo is None:
         since = since.replace(tzinfo=timezone.utc)

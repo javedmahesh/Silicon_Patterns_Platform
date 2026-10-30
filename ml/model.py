@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import joblib
@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from ml import dataset as ds
 from ml import features as feat
 from ml import registry
-from master_db.models import Company, MlModel, MlRecommendation
+from master_db.models import MlModel, MlRecommendation
 
 logger = logging.getLogger("ml.model")
 

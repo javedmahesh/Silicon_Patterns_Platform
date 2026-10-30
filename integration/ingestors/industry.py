@@ -20,7 +20,7 @@ from config.enums import (
 from integration.competitors import is_excluded_domain
 from integration.ingestors.ats_hosts import company_domain_or_blank
 from integration.ingestors.base import BaseIngestor, RowResult
-from integration.normalizer import canonical_company_id, name_key, normalize_domain
+from integration.normalizer import canonical_company_id, name_key
 from master_db.models import Company
 
 

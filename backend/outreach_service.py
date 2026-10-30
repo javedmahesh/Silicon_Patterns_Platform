@@ -1868,7 +1868,7 @@ def gmail_get_auth_url(session: Session, actor) -> GmailAuthUrlOut:
         state=state,
     )
     # Persist the state for CSRF verification at callback time
-    account = orepo.upsert_provider_account(
+    orepo.upsert_provider_account(
         session,
         user_id=getattr(actor, "id", None),
         provider_type="gmail",

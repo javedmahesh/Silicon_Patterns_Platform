@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from backend import dm_intelligence as dmi
 from backend import repositories as repo
 from backend import outreach_repo as orepo
-from master_db.models import LeadershipSignal, Opportunity, OutreachLead, OutreachMessage
+from master_db.models import LeadershipSignal, OutreachLead, OutreachMessage
 
 from backend.timeutil import utcnow as _utcnow
 
@@ -245,12 +245,6 @@ def recommend_subject(session: Session, company_domain: str, lead: OutreachLead 
                 reason=f"Strong {opp.opportunity_type} signal",
                 confidence="high",
             ))
-
-    # Hiring signals
-    demand = list(session.scalars(
-        select(DemandSignal := __import__('master_db.models', fromlist=['DemandSignal']).DemandSignal)
-        .where(DemandSignal.company_domain == company_domain)
-    )) if hasattr(__import__('master_db.models', fromlist=['DemandSignal']), 'DemandSignal') else []
 
     if engagement and engagement.offering:
         off = engagement.offering.lower()
