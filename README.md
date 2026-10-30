@@ -62,7 +62,7 @@ dark, dense analyst web console.
 - **Outreach module** — a **native** module on the platform stack (FastAPI + the React SPA + the master
   DB), under `/outreach/*`: a CRM pipeline, `{{variable}}` email templates, draft → approval → send →
   reply, an inbox and funnel analytics. It **reuses** the platform's companies, decision makers, lead
-  scores and engagement recommendations (no duplicated data) and the platform's Google-SSO/roles (no
+  scores and engagement recommendations (no duplicated data) and the platform's Microsoft sign-in/roles (no
   separate auth). "Sync from Discovery" qualifies top-scored companies into the pipeline. Email send/receive
   is **mock by default** (`OUTREACH_MAIL_MODE=mock`); real Gmail is a drop-in behind the same interface.
 - **Accounts & access** — Microsoft Entra ID sign-in (company domain only) + app JWTs; roles
@@ -133,7 +133,9 @@ SERVICE_PROVIDER`) and never stored in the master DB.
   falls back to a SQLite file (`master_local.db`). Separate from every engine's storage.
 - **Decision Maker Intelligence (Apify)** → the platform's decision-maker engine. The
   `decision_maker_intelligence` stage calls the Apify actor (`APIFY_API_TOKEN`) and ingests the
-  results into `decision_makers`. See `.env.example` / `config/apify.py`.
+  results into `decision_makers`. It is **manual-only** (Apify bills per lead): it is not part of
+  `run all` or the scheduled refresh, and is triggered per company from the Decision Makers page
+  or with `sp-platform run decision_maker_intelligence`. See `.env.example` / `config/apify.py`.
 - **Resolver** → exact-domain / alias / fuzzy match; fuzzy uses difflib on SQLite and a
   **GiST trigram KNN** index on Postgres (migration `0006`). Unmatched ⇒ stub + review queue.
 - **Idempotent ingestion** → upserts keyed on `company_domain` · `opportunity_id` · `job_id` ·
@@ -160,7 +162,7 @@ Silicon_Patterns_Platform/
 │   └── routers/      health · auth · companies · leads · opportunities · demand-signals · decision-makers · leadership-signals · analytics · pipeline · review · reviews · admin · assignments · crm
 ├── integration/      normalizer · resolver · merge · per-engine ingestors
 │   └── ingestors/
-├── master_db/        SQLAlchemy models + SQL migrations (0001–0016) + chunked bulk upsert
+├── master_db/        SQLAlchemy models + SQL migrations (0001–0058) + chunked bulk upsert
 │   └── migrations/
 ├── lead_scoring/     config (tunable weights) · scorer (pure math) · service · run
 ├── orchestrator/     sp-platform CLI · pipeline stages · run tracking · health
@@ -168,9 +170,9 @@ Silicon_Patterns_Platform/
 ├── config/           engine paths · canonical enums · scoring weights · employer/enrichment seeds · supabase creds
 ├── scripts/          seed_master_db.py (fixtures -> full dev DB) · validate_postgres.py · build_convergence_seed.py · dump_openapi.py (OpenAPI -> TS types) · purge_service_providers.py · backfill_classification.py · derive_leadership_signals.py · recommend_engagements.py
 ├── docs/             SCHEMA · ERD · SECURITY · DEPLOYMENT · FRONTEND_DESIGN · supabase_rls.sql
-├── .github/workflows/ refresh.yml (twice-daily scheduled pipeline)
+├── .github/workflows/ refresh.yml (twice-daily scheduled pipeline — see HANDOVER_GUIDE §4: the API also has a built-in scheduler)
 ├── Dockerfile · render.yaml · .dockerignore   read-API container (Render/Railway/Fly/Cloud Run)
-├── tests/            pytest suite (180 tests)
+├── tests/            pytest suite (1,900+ test functions)
 ├── master_local.db   local SQLite master DB (dev seed data — ships with the repo)
 ├── requirements.txt  pip deps  ·  pyproject.toml  (installable; exposes `sp-platform`)
 ├── README.md         this file
@@ -230,8 +232,8 @@ auditable. All weights / multipliers / bands are tunable in `config/lead_scoring
 
 **Complete (P0–P6) + the multi-user epic + person-level leadership signals + engagement
 recommendations.** Integration, resolver, lead scoring, FastAPI backend, orchestrator CLI, and the
-React website are all built and working. On top of that the platform is now **multi-user**: Google
-Workspace SSO + app JWTs; **admin / manager / member** roles; a manager **Team console** (lead
+React website are all built and working. On top of that the platform is now **multi-user**: Microsoft
+Entra ID sign-in + app JWTs; **admin / manager / member** roles; a manager **Team console** (lead
 assignment, workload, pipeline statuses) with a full assignment **audit trail**; **company notes +
 an activity timeline**; **My leads**; **professional contacts** for decision makers (view: any
 signed-in user; edit: admin/manager); and **service-provider competitor exclusion** enforced at
@@ -243,9 +245,9 @@ analysts override the model's verdict **without overwriting the score** (separat
 status, combined ranking, an append-only feedback trail, model-vs-human reports, and an optional
 OFF-by-default **adjusted score** that boosts/penalises a *separate* grade). An **annual-lists**
 ingestor adds ranking appearances as opportunities (with a Recognition card), and a **company-news**
-ingestor adds people moves (feeding the Leadership Signals). The backend (migrations `0001`–`0016`,
+ingestor adds people moves (feeding the Leadership Signals). The backend (migrations `0001`–`0058`,
 pg_trgm resolver, bulk upserts, API, scoring, orchestrator) is **validated end-to-end against real
-PostgreSQL**; the frontend is built and verified live against the local master DB. **180 tests pass.** *(Dev runs behind an auth bypass + role switcher until Google SSO is wired at
+PostgreSQL**; the frontend is built and verified live against the local master DB. The suite has **1,900+ test functions** — run `pytest` for the current pass status. *(Dev runs behind an auth bypass + role switcher until Microsoft sign-in is configured at
 deployment — see [`HOW_TO_RUN.md`](HOW_TO_RUN.md) §8.)*
 
 Local sample data (`master_local.db`): 122 companies (competitor-free) · 43 opportunities · 188
